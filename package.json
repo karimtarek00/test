@@ -1,0 +1,31 @@
+{
+  "name": "scom-server-dashboard",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "dev": "concurrently -n server,client -c blue,green \"npm:dev:server\" \"npm:dev:client\"",
+    "dev:server": "node --watch server/src/index.js",
+    "dev:client": "vite",
+    "build": "vite build",
+    "start": "cross-env NODE_ENV=production node server/src/index.js",
+    "seed": "node server/src/seed/seedAdmin.js && node server/src/seed/seedSampleAlerts.js && node server/src/seed/seedDemoServers.js",
+    "test": "node --test server/test"
+  },
+  "dependencies": {
+    "express": "^4.19.2",
+    "cookie-parser": "^1.4.6",
+    "multer": "^2.2.0",
+    "xlsx": "^0.18.5",
+    "pdfkit": "^0.15.0",
+    "react": "^18.3.1",
+    "react-dom": "^18.3.1",
+    "react-router-dom": "^6.26.2"
+  },
+  "devDependencies": {
+    "vite": "^5.4.8",
+    "@vitejs/plugin-react": "^4.3.1",
+    "concurrently": "^8.2.2",
+    "cross-env": "^7.0.3"
+  }
+}
