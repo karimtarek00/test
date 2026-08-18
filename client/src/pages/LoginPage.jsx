@@ -1,6 +1,7 @@
 import { useState } from 'react';
 import { Navigate } from 'react-router-dom';
 import { useAuth } from '../context/AuthContext.jsx';
+import { IconShield } from '../components/icons.jsx';
 
 export default function LoginPage() {
   const { user, login } = useAuth();
@@ -28,10 +29,10 @@ export default function LoginPage() {
     <div className="login-shell">
       <div className="login-card">
         <div className="brand">
-          <div className="brand-mark">SW</div>
+          <div className="brand-mark"><IconShield /></div>
           <div className="brand-text">
-            <span className="brand-title">Server Watch</span>
-            <span className="brand-subtitle">SCOM Dashboard</span>
+            <span className="brand-title">SERVER WATCH</span>
+            <span className="brand-subtitle">Server Monitoring Dashboard</span>
           </div>
         </div>
         <form onSubmit={handleSubmit}>
@@ -44,11 +45,10 @@ export default function LoginPage() {
             <input id="password" type="password" className="input" value={password} onChange={(e) => setPassword(e.target.value)} />
           </div>
           {error && <div className="error-text">{error}</div>}
-          <button className="btn" type="submit" disabled={submitting} style={{ width: '100%', marginTop: 6 }}>
+          <button className="btn" type="submit" disabled={submitting} style={{ width: '100%', marginTop: 6, justifyContent: 'center' }}>
             {submitting ? 'Signing in…' : 'Sign in'}
           </button>
         </form>
-        <div className="help-text">Seeded accounts: admin / ChangeMe123! · viewer / ChangeMe123!</div>
       </div>
     </div>
   );

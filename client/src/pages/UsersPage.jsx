@@ -9,7 +9,7 @@ export default function UsersPage() {
   const [form, setForm] = useState({ username: '', password: '', role: 'viewer' });
   const [error, setError] = useState('');
 
-  const load = () => api.get('/users').then((data) => setRows(data.rows));
+  const load = () => api.get('/users').then((data) => setRows(data.users));
   useEffect(() => { load(); }, []);
 
   const createUser = async (e) => {

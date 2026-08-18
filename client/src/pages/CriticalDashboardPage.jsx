@@ -6,7 +6,7 @@ export default function CriticalDashboardPage() {
   const [groups, setGroups] = useState(null);
 
   useEffect(() => {
-    api.get('/critical-servers').then((data) => setGroups(data.groups));
+    api.get('/critical').then((data) => setGroups(data.groups));
   }, []);
 
   const groupNames = groups ? Object.keys(groups) : [];

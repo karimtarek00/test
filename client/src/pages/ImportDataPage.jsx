@@ -32,7 +32,7 @@ function AlertsImportPanel({ type, title }) {
     formData.append('alertsType', type);
     try {
       const data = await api.post('/import/alerts', formData);
-      setResult(data);
+      setResult(data.summary);
     } catch (err) {
       setError(err.message);
     } finally {
@@ -53,7 +53,8 @@ function AlertsImportPanel({ type, title }) {
       {error && <div className="error-text">{error}</div>}
       {result && (
         <div className="help-text">
-          Parsed {result.total} rows → inserted {result.inserted}, skipped {result.skipped} (already present).
+          Parsed {result.totalRows} rows → inserted {result.imported}, skipped {result.duplicates} (already present)
+          {result.failed ? `, ${result.failed} failed` : ''}.
         </div>
       )}
     </div>
@@ -78,7 +79,7 @@ function ServersImportPanel() {
     formData.append('mode', mode);
     try {
       const data = await api.post('/import/servers', formData);
-      setResult(data);
+      setResult(data.summary);
     } catch (err) {
       setError(err.message);
     } finally {
@@ -94,7 +95,7 @@ function ServersImportPanel() {
       </p>
       <form onSubmit={submit} style={{ display: 'flex', gap: 10, alignItems: 'center', flexWrap: 'wrap' }}>
         <input type="file" accept=".xlsx" onChange={(e) => setFile(e.target.files[0])} />
-        <select className="input" value={mode} onChange={(e) => setMode(e.target.value)}>
+        <select className="input" style={{ width: 260 }} value={mode} onChange={(e) => setMode(e.target.value)}>
           <option value="additive">Additive (add/update only)</option>
           <option value="full_replace">Full replace (untags servers missing from file)</option>
         </select>
@@ -103,8 +104,9 @@ function ServersImportPanel() {
       {error && <div className="error-text">{error}</div>}
       {result && (
         <div className="help-text">
-          Parsed {result.total} rows → inserted {result.inserted}, updated {result.updated}
-          {mode === 'full_replace' && `, untagged ${result.untagged}`}.
+          Parsed {result.totalRows} rows → inserted {result.imported}, updated {result.updated}
+          {mode === 'full_replace' && `, untagged ${result.untagged}`}
+          {result.failed ? `, ${result.failed} failed` : ''}.
         </div>
       )}
     </div>

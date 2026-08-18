@@ -1,59 +1,78 @@
+import { useState } from 'react';
 import { NavLink } from 'react-router-dom';
 import { useAuth } from '../context/AuthContext.jsx';
+import {
+  IconDashboard, IconBell, IconStar, IconServer, IconUpload, IconSettings,
+  IconUsers, IconChevronLeft, IconChevronRight, IconShield,
+} from './icons.jsx';
 
-const NAV_ITEMS = [
-  { to: '/', label: 'Dashboard', icon: '◧', end: true },
-  { to: '/alarms', label: 'Alarms', icon: '▲' },
-  { to: '/inventory', label: 'Inventory', icon: '▤' },
-  { to: '/critical', label: 'Critical Servers', icon: '◆' },
-  { to: '/reports', label: 'Reports', icon: '▦' },
+const SECTIONS = [
+  {
+    label: 'Overview',
+    items: [{ to: '/', label: 'Dashboard', icon: IconDashboard, end: true }],
+  },
+  {
+    label: 'Monitoring',
+    items: [
+      { to: '/alarms', label: 'Alerts', icon: IconBell },
+      { to: '/critical', label: 'Critical Servers', icon: IconStar },
+    ],
+  },
+  {
+    label: 'Infrastructure',
+    items: [{ to: '/inventory', label: 'Inventory', icon: IconServer }],
+  },
+  {
+    label: 'Data Management',
+    items: [{ to: '/import', label: 'Import Data', icon: IconUpload, adminOnly: true }],
+  },
+  {
+    label: 'Administration',
+    items: [
+      { to: '/configuration', label: 'Configuration', icon: IconSettings, adminOnly: true },
+      { to: '/users', label: 'Users', icon: IconUsers, adminOnly: true },
+    ],
+  },
 ];
 
-const ADMIN_NAV_ITEMS = [
-  { to: '/import', label: 'Import Data', icon: '⇧' },
-  { to: '/configuration', label: 'Configuration', icon: '⚙' },
-  { to: '/users', label: 'Users', icon: '◎' },
-];
-
-export default function Sidebar() {
-  const { user, isAdmin, logout } = useAuth();
+export default function Sidebar({ collapsed, onToggleCollapse }) {
+  const { isAdmin } = useAuth();
 
   return (
     <aside className="sidebar">
       <div className="brand">
-        <div className="brand-mark">SW</div>
+        <div className="brand-mark"><IconShield /></div>
         <div className="brand-text">
-          <span className="brand-title">Server Watch</span>
-          <span className="brand-subtitle">SCOM Dashboard</span>
+          <span className="brand-title">SERVER WATCH</span>
+          <span className="brand-subtitle">Server Monitoring Dashboard</span>
         </div>
       </div>
 
-      <div className="nav-section-label">Monitor</div>
-      {NAV_ITEMS.map((item) => (
-        <NavLink key={item.to} to={item.to} end={item.end} className={({ isActive }) => `nav-link${isActive ? ' active' : ''}`}>
-          <span>{item.icon}</span>
-          {item.label}
-        </NavLink>
-      ))}
-
-      {isAdmin && (
-        <>
-          <div className="nav-section-label">Admin</div>
-          {ADMIN_NAV_ITEMS.map((item) => (
-            <NavLink key={item.to} to={item.to} className={({ isActive }) => `nav-link${isActive ? ' active' : ''}`}>
-              <span>{item.icon}</span>
-              {item.label}
-            </NavLink>
-          ))}
-        </>
-      )}
+      <nav className="nav-scroll">
+        {SECTIONS.map((section) => {
+          const items = section.items.filter((item) => !item.adminOnly || isAdmin);
+          if (items.length === 0) return null;
+          return (
+            <div key={section.label}>
+              <div className="nav-section-label">{section.label}</div>
+              {items.map((item) => {
+                const Icon = item.icon;
+                return (
+                  <NavLink key={item.to} to={item.to} end={item.end} className={({ isActive }) => `nav-link${isActive ? ' active' : ''}`}>
+                    <Icon />
+                    <span className="label">{item.label}</span>
+                  </NavLink>
+                );
+              })}
+            </div>
+          );
+        })}
+      </nav>
 
       <div className="sidebar-footer">
-        <div style={{ fontSize: 12.5, color: 'var(--text-dim)', marginBottom: 8 }}>
-          {user?.username} <span className="pill" style={{ marginLeft: 6 }}>{user?.role}</span>
-        </div>
-        <button className="btn-secondary btn" style={{ width: '100%' }} onClick={logout}>
-          Sign out
+        <button className="collapse-btn" onClick={onToggleCollapse}>
+          {collapsed ? <IconChevronRight /> : <IconChevronLeft />}
+          <span className="label">Collapse</span>
         </button>
       </div>
     </aside>
