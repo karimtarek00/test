@@ -12,7 +12,7 @@ require('dotenv').config({ path: path.join(__dirname, '..', '..', '.env'), quiet
 const NODE_ENV = process.env.NODE_ENV || 'development';
 const isProduction = NODE_ENV === 'production';
 
-const PORT = Number(process.env.PORT) || 8080;
+const PORT = Number(process.env.PORT) || 5352;
 
 const SQLITE_PATH = process.env.SQLITE_PATH || path.join(__dirname, '..', '..', 'data', 'server_watch.db');
 

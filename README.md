@@ -20,8 +20,8 @@ against locally imported/seeded data.
 ```bash
 npm install
 npm run seed          # loads seed-data/*.xlsx sample SCOM alert exports
-npm run dev:server      # backend on :8080
-npm run dev:client      # frontend on :5173 (proxies /api to :8080), separate terminal
+npm run dev:server      # backend on :5352
+npm run dev:client      # frontend on :5173 (proxies /api to :5352), separate terminal
 ```
 
 Open http://localhost:5173 and sign in with:

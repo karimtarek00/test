@@ -50,7 +50,7 @@ async function cmdStatus() {
   console.log(`  memory:       ${proc.monit ? Math.round(proc.monit.memory / 1024 / 1024) + ' MB' : 'n/a'}`);
   console.log(`  cpu:          ${proc.monit ? proc.monit.cpu + '%' : 'n/a'}`);
 
-  const port = Number(process.env.PORT) || 8080;
+  const port = Number(process.env.PORT) || 5352;
   const ready = await fetchJson(port, '/api/ready');
   if (ready) {
     console.log(`  /api/ready:   HTTP ${ready.status} -- ${ready.body?.status}`);

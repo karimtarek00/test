@@ -37,7 +37,7 @@ function resolvePort() {
     const match = fs.readFileSync(envFile, 'utf8').match(/^PORT=(\d+)/m);
     if (match) return Number(match[1]);
   }
-  return 8080;
+  return 5352;
 }
 
 function extractIfZip(sourcePath) {
