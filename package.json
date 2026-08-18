@@ -1,31 +1,56 @@
 {
-  "name": "scom-server-dashboard",
+  "name": "server-watch",
   "version": "0.1.0",
   "private": true,
-  "type": "module",
+  "type": "commonjs",
+  "engines": {
+    "node": ">=22.5.0"
+  },
   "scripts": {
-    "dev": "concurrently -n server,client -c blue,green \"npm:dev:server\" \"npm:dev:client\"",
-    "dev:server": "node --watch server/src/index.js",
+    "seed": "node seed/seed.js",
+    "dev:server": "node --watch src/index.js",
     "dev:client": "vite",
-    "build": "vite build",
-    "start": "cross-env NODE_ENV=production node server/src/index.js",
-    "seed": "node server/src/seed/seedAdmin.js && node server/src/seed/seedSampleAlerts.js && node server/src/seed/seedDemoServers.js",
-    "test": "node --test server/test"
+    "build": "vite build && node scripts/build-server.js",
+    "start": "node --max-old-space-size=4096 dist/index.js",
+    "preview": "vite preview --host",
+    "test": "node --test",
+    "setup": "node ops/setup.js",
+    "deploy": "node ops/deploy.js",
+    "rollback": "node ops/rollback.js",
+    "service:status": "node ops/cli.js status",
+    "service:restart": "node ops/cli.js restart",
+    "service:stop": "node ops/cli.js stop",
+    "service:start": "node ops/cli.js start",
+    "logs": "node ops/cli.js logs",
+    "logs:errors": "node ops/cli.js logs:errors",
+    "logs:tail": "node ops/cli.js logs:tail",
+    "logs:search": "node ops/cli.js logs:search",
+    "logs:rotate": "node ops/cli.js logs:rotate"
   },
   "dependencies": {
+    "adm-zip": "^0.6.0",
+    "compression": "^1.8.1",
+    "cors": "^2.8.5",
+    "dotenv": "^17.4.2",
     "express": "^4.19.2",
-    "cookie-parser": "^1.4.6",
+    "express-rate-limit": "^8.6.2",
     "multer": "^2.2.0",
-    "xlsx": "^0.18.5",
     "pdfkit": "^0.15.0",
+    "pino": "^10.3.1",
+    "pino-http": "^11.0.0",
+    "pino-pretty": "^13.1.3",
+    "pm2": "^7.0.3",
     "react": "^18.3.1",
     "react-dom": "^18.3.1",
-    "react-router-dom": "^6.26.2"
+    "react-router-dom": "^6.30.2",
+    "xlsx": "^0.18.5"
   },
   "devDependencies": {
-    "vite": "^5.4.8",
     "@vitejs/plugin-react": "^4.3.1",
-    "concurrently": "^8.2.2",
-    "cross-env": "^7.0.3"
+    "supertest": "^7.2.2",
+    "vite": "^5.4.21"
+  },
+  "overrides": {
+    "js-yaml": "^4.3.1"
   }
 }

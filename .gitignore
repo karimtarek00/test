@@ -1,7 +1,13 @@
 node_modules/
 dist/
+public/assets/
+public/index.html
 data/*.db
 data/*.db-*
-*.log
+logs/*.log
+logs/*.gz
+backups/*/
+!backups/.gitkeep
+run.pid
 .env
 .DS_Store
