@@ -89,17 +89,13 @@ h1, h2, h3, h4 { margin: 0; font-weight: 600; }
 }
 
 .brand-mark {
-  width: 32px;
-  height: 32px;
-  border-radius: 8px;
-  background: linear-gradient(135deg, var(--info), #1450a8);
   display: flex;
   align-items: center;
   justify-content: center;
-  color: #fff;
+  color: var(--info);
   flex-shrink: 0;
 }
-.brand-mark svg { width: 18px; height: 18px; }
+.brand-mark svg { width: 34px; height: 34px; }
 
 .brand-text { display: flex; flex-direction: column; line-height: 1.2; overflow: hidden; white-space: nowrap; }
 .brand-title { font-weight: 800; font-size: 15px; letter-spacing: 0.03em; }
