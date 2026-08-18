@@ -37,4 +37,11 @@ export const IconSearch = (p) => (<svg {...base} {...p}><circle cx="11" cy="11" 
 export const IconUser = (p) => (<svg {...base} {...p}><circle cx="12" cy="8" r="4" /><path d="M4 20c0-4.4 3.6-8 8-8s8 3.6 8 8" /></svg>);
 export const IconClose = (p) => (<svg {...base} {...p}><path d="M18 6 6 18M6 6l12 12" /></svg>);
 export const IconPulse = (p) => (<svg {...base} {...p}><path d="M3 12h4l2-7 4 14 2-7h6" /></svg>);
-export const IconShield = (p) => (<svg {...base} {...p}><path d="M12 3l7 3v6c0 4.5-3 7.5-7 9-4-1.5-7-4.5-7-9V6l7-3Z" /><path d="M9 12l2 2 4-4" /></svg>);
+// Shield outline with a heartbeat/EKG pulse line through the middle --
+// matches the brand mark from the design spec.
+export const IconShield = (p) => (
+  <svg {...base} {...p}>
+    <path d="M12 3l7 3v6c0 4.5-3 7.5-7 9-4-1.5-7-4.5-7-9V6l7-3Z" />
+    <path d="M6.7 12.5h2l1.1-3 2 6.5 1.4-3.5h3.1" strokeWidth="1.8" />
+  </svg>
+);
