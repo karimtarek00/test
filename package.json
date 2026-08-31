@@ -15,6 +15,7 @@
     "preview": "vite preview --host",
     "test": "node --test",
     "setup": "node ops/setup.js",
+    "setup:windows-service": "node ops/installWindowsService.js",
     "deploy": "node ops/deploy.js",
     "rollback": "node ops/rollback.js",
     "service:status": "node ops/cli.js status",

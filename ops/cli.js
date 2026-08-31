@@ -4,8 +4,20 @@
 // (`node ops/cli.js <command>`) or via the `service:*`/`logs*` npm scripts.
 const http = require('http');
 const pm2 = require('./lib/pm2');
+const windowsService = require('./lib/windowsService');
 const logsLib = require('./lib/logs');
-const { APP_NAME } = require('./lib/paths');
+const { APP_NAME, WINDOWS_SERVICE_NAME, OUT_LOG, ERROR_LOG } = require('./lib/paths');
+
+// Two supervisors this app can run under: PM2 (default, cross-platform) or,
+// on Windows, an NSSM-wrapped Windows Service as a fallback for
+// environments where PM2 itself turns out to be the unreliable part (see
+// ops/vendor/README.md). Detected automatically -- once the NSSM service
+// has actually been installed (npm run setup:windows-service), every
+// service:* command here uses it instead, with no separate command set to
+// remember day to day.
+function useWindowsService() {
+  return process.platform === 'win32' && windowsService.serviceExists();
+}
 
 function parseArgs(argv) {
   const flags = {};
@@ -33,23 +45,12 @@ function fetchJson(port, path) {
   });
 }
 
-async function cmdStatus() {
-  const proc = pm2.describeApp();
-  if (!proc) {
-    console.log(`${APP_NAME}: not running under PM2 (pm2 status shows nothing for this app).`);
-    console.log(`Start it with: npm run service:start`);
-    return;
-  }
-  const env = proc.pm2_env || {};
-  console.log(`${APP_NAME}`);
-  console.log(`  status:       ${env.status}`);
-  console.log(`  pid:          ${proc.pid}`);
-  console.log(`  uptime:       ${env.pm_uptime ? formatUptime(Date.now() - env.pm_uptime) : 'n/a'}`);
-  console.log(`  restarts:     ${env.restart_time ?? 0}`);
-  console.log(`  unstable:     ${env.unstable_restarts ?? 0}`);
-  console.log(`  memory:       ${proc.monit ? Math.round(proc.monit.memory / 1024 / 1024) + ' MB' : 'n/a'}`);
-  console.log(`  cpu:          ${proc.monit ? proc.monit.cpu + '%' : 'n/a'}`);
-
+async function reportAppHealth() {
+  // Shared by both backends -- this is the part the add-on brief calls out
+  // specifically: a service *wrapper* (PM2 or NSSM) reporting "running"
+  // doesn't guarantee the app *inside* it is actually healthy, so this
+  // always hits the real HTTP endpoint rather than trusting the wrapper's
+  // own state alone.
   const port = Number(process.env.PORT) || 5352;
   const ready = await fetchJson(port, '/api/ready');
   if (ready) {
@@ -70,13 +71,55 @@ async function cmdStatus() {
   for (const e of recentErrors) console.log('    ' + logsLib.formatEntry(e).split('\n')[0]);
 }
 
+async function cmdStatus() {
+  if (useWindowsService()) {
+    const svc = windowsService.describe();
+    console.log(`${WINDOWS_SERVICE_NAME} (Windows Service via NSSM)`);
+    console.log(`  state:        ${svc?.state ?? 'UNKNOWN'}`);
+    if (svc?.state !== 'RUNNING') {
+      console.log(`  Start it with: sc start "${WINDOWS_SERVICE_NAME}"  (or: npm run service:start)`);
+    }
+    await reportAppHealth();
+    return;
+  }
+
+  const proc = pm2.describeApp();
+  if (!proc) {
+    console.log(`${APP_NAME}: not running under PM2 (pm2 status shows nothing for this app).`);
+    console.log(`Start it with: npm run service:start`);
+    return;
+  }
+  const env = proc.pm2_env || {};
+  console.log(`${APP_NAME}`);
+  console.log(`  status:       ${env.status}`);
+  console.log(`  pid:          ${proc.pid}`);
+  console.log(`  uptime:       ${env.pm_uptime ? formatUptime(Date.now() - env.pm_uptime) : 'n/a'}`);
+  console.log(`  restarts:     ${env.restart_time ?? 0}`);
+  console.log(`  unstable:     ${env.unstable_restarts ?? 0}`);
+  console.log(`  memory:       ${proc.monit ? Math.round(proc.monit.memory / 1024 / 1024) + ' MB' : 'n/a'}`);
+  console.log(`  cpu:          ${proc.monit ? proc.monit.cpu + '%' : 'n/a'}`);
+
+  await reportAppHealth();
+}
+
 function formatUptime(ms) {
   const s = Math.floor(ms / 1000);
   const d = Math.floor(s / 86400), h = Math.floor((s % 86400) / 3600), m = Math.floor((s % 3600) / 60);
   return `${d}d ${h}h ${m}m`;
 }
 
-function cmdLogs() { pm2.logs(true); }
+function cmdLogs() {
+  if (useWindowsService()) {
+    // NSSM has no bundled live-tail-follow equivalent to `pm2 logs` --
+    // point at the same files instead of pretending to follow PM2's.
+    console.log('Live-follow log tailing isn\'t available under the NSSM/Windows Service backend.');
+    console.log('Use `npm run logs:tail` for a snapshot, or `Get-Content -Wait` on these files directly:');
+    console.log(`  ${OUT_LOG}`);
+    console.log(`  ${ERROR_LOG}`);
+    return;
+  }
+  pm2.logs(true);
+}
 
 function cmdLogsErrors() {
   const entries = logsLib.readAll().filter(logsLib.isErrorEntry);
@@ -110,9 +153,9 @@ const COMMANDS = {
   'logs:tail': (flags) => cmdLogsTail(flags),
   'logs:search': (flags) => cmdLogsSearch(flags),
   'logs:rotate': () => require('child_process').execFileSync(process.execPath, [require('path').join(__dirname, 'rotateLogs.js')], { stdio: 'inherit' }),
-  restart: () => pm2.restart(),
-  stop: () => pm2.stop(),
-  start: () => pm2.start(),
+  restart: () => (useWindowsService() ? windowsService.restart() : pm2.restart()),
+  stop: () => (useWindowsService() ? windowsService.stop() : pm2.stop()),
+  start: () => (useWindowsService() ? windowsService.start() : pm2.start()),
 };
 
 async function main() {
@@ -124,8 +167,10 @@ async function main() {
     console.log('Commands: ' + Object.keys(COMMANDS).join(', '));
     process.exit(cmd ? 1 : 0);
   }
-  if (!pm2.isInstalled() && cmd !== 'logs:errors' && cmd !== 'logs:tail' && cmd !== 'logs:search') {
+  const logOnlyCmd = cmd === 'logs:errors' || cmd === 'logs:tail' || cmd === 'logs:search';
+  if (!useWindowsService() && !pm2.isInstalled() && !logOnlyCmd) {
     console.error('Bundled PM2 not found -- node_modules looks incomplete. Re-extract the app bundle and try again.');
+    console.error('(If PM2 itself is the unreliable part in this environment, see ops/vendor/README.md to run under NSSM as a Windows Service instead.)');
     process.exit(1);
   }
   await handler(flags);

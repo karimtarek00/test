@@ -45,6 +45,29 @@ npm run service:status
 npm run logs:tail
 ```
 
+### Alternative: Windows Service via NSSM (no PM2)
+
+For a Windows server where PM2 itself turns out to be the unreliable part
+(seen in practice: PM2's own bundled files intermittently missing, usually
+endpoint AV quarantining something during a crash-restart loop) — NSSM
+wraps `node dist/index.js` directly as a real Windows Service instead, one
+fewer moving part between the OS and the app.
+
+NSSM itself has to be vendored in once (`ops/vendor/nssm.exe`) since neither
+a locked-down production server nor this project's own build environment
+can reach nssm.cc — see `ops/vendor/README.md` for the one-time manual
+download. Once it's in place, from an elevated (Administrator) prompt:
+
+```bash
+npm run setup:windows-service
+sc start "server-watch-svc"
+npm run service:status
+```
+
+`service:status` / `:start` / `:stop` / `:restart` all detect automatically
+whether the NSSM service is installed and use it instead of PM2 — same
+commands either way, nothing else to remember.
+
 ### Deploy / rollback
 
 ```bash

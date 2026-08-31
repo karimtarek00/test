@@ -21,4 +21,21 @@ const PM2_BIN = path.join(APP_ROOT, 'node_modules', 'pm2', 'bin', 'pm2');
 // backups/, node_modules-adjacent ops/ tooling itself).
 const DEPLOYABLE_ENTRIES = ['dist', 'public', 'node_modules', 'package.json', 'db', 'seed'];
 
-module.exports = { APP_ROOT, APP_NAME, LOG_DIR, OUT_LOG, ERROR_LOG, BACKUP_DIR, ECOSYSTEM_FILE, PM2_BIN, DEPLOYABLE_ENTRIES };
+// Alternate Windows-only supervisor for environments where the bundled PM2
+// itself is unreliable (seen in practice: PM2's own node_modules files
+// intermittently missing/quarantined by endpoint AV, which then breaks
+// PM2 -- not just the app it's supposed to supervise). NSSM wraps the Node
+// process directly as a real Windows Service instead, so there's one fewer
+// moving part between the OS and the app. Not fetched automatically: the
+// production server has no internet access, and this dev environment's own
+// egress policy blocks nssm.cc too -- someone has to download it once on a
+// machine that does have internet access. See ops/vendor/README.md.
+const NSSM_BIN = path.join(APP_ROOT, 'ops', 'vendor', 'nssm.exe');
+const WINDOWS_SERVICE_NAME = 'server-watch-svc';
+const NSSM_STDOUT_LOG = path.join(LOG_DIR, 'nssm-stdout.log');
+const NSSM_STDERR_LOG = path.join(LOG_DIR, 'nssm-stderr.log');
+
+module.exports = {
+  APP_ROOT, APP_NAME, LOG_DIR, OUT_LOG, ERROR_LOG, BACKUP_DIR, ECOSYSTEM_FILE, PM2_BIN, DEPLOYABLE_ENTRIES,
+  NSSM_BIN, WINDOWS_SERVICE_NAME, NSSM_STDOUT_LOG, NSSM_STDERR_LOG,
+};
