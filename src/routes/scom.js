@@ -17,10 +17,11 @@ router.get('/settings', asyncHandler(async (req, res) => {
 }));
 
 router.put('/settings', asyncHandler(async (req, res) => {
-  const { managementServer, fullSyncIntervalMinutes, winrmUsername, winrmPassword } = req.body;
+  const { managementServer, fullSyncIntervalMinutes, autoFetchIntervalMinutes, winrmUsername, winrmPassword } = req.body;
   const saved = await scomSync.saveSettings({
     management_server: managementServer?.trim(),
     full_sync_interval_minutes: fullSyncIntervalMinutes,
+    auto_fetch_interval_minutes: autoFetchIntervalMinutes,
     winrm_username: winrmUsername?.trim(),
     // A blank password here means "keep the existing one" -- see
     // saveSettings, which only overwrites on a non-empty value. The form

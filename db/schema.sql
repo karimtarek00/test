@@ -96,7 +96,12 @@ CREATE TABLE IF NOT EXISTS scom_settings (
   -- identity only.
   winrm_username              TEXT,
   winrm_password              TEXT,
-  enabled                     INTEGER NOT NULL DEFAULT 0,  -- auto-fetch (every 5 min, incremental) on/off
+  enabled                     INTEGER NOT NULL DEFAULT 0,  -- auto-fetch (incremental) on/off
+  -- How often the incremental auto-fetch tick runs while enabled. Separate
+  -- from full_sync_interval_minutes below -- that one is specifically the
+  -- closure-detection full sync, and only a full run may ever close an
+  -- alert (see scomSync.js's file header for why).
+  auto_fetch_interval_minutes INTEGER NOT NULL DEFAULT 5,
   last_sync_at                TEXT,
   last_sync_status            TEXT,
   last_sync_error             TEXT,

@@ -74,6 +74,9 @@ async function saveSettings(fields) {
   const fullSyncIntervalMinutes = merged.full_sync_interval_minutes !== undefined && merged.full_sync_interval_minutes !== null && merged.full_sync_interval_minutes !== ''
     ? Math.max(0, parseInt(merged.full_sync_interval_minutes, 10) || 0)
     : 30;
+  const autoFetchIntervalMinutes = merged.auto_fetch_interval_minutes !== undefined && merged.auto_fetch_interval_minutes !== null && merged.auto_fetch_interval_minutes !== ''
+    ? Math.max(1, parseInt(merged.auto_fetch_interval_minutes, 10) || 5)
+    : 5;
   // A blank password in the incoming fields means "leave the stored
   // password alone" (the settings form never receives the real password
   // back to redisplay, so it can't round-trip it) -- only overwrite when a
@@ -81,11 +84,15 @@ async function saveSettings(fields) {
   const winrmPassword = fields.winrm_password ? fields.winrm_password : current.winrm_password || null;
   await pool.query(
     `UPDATE scom_settings SET management_server=$1, winrm_username=$2, winrm_password=$3,
-       full_sync_interval_minutes=$4, updated_at=strftime('%Y-%m-%dT%H:%M:%fZ','now') WHERE id = 1`,
-    [merged.management_server || null, merged.winrm_username || null, winrmPassword, fullSyncIntervalMinutes]
+       full_sync_interval_minutes=$4, auto_fetch_interval_minutes=$5,
+       updated_at=strftime('%Y-%m-%dT%H:%M:%fZ','now') WHERE id = 1`,
+    [merged.management_server || null, merged.winrm_username || null, winrmPassword, fullSyncIntervalMinutes, autoFetchIntervalMinutes]
   );
   const saved = await getSettings();
   scheduleFullSyncTicks(saved.full_sync_interval_minutes);
+  // If auto-fetch is already running, apply the new interval immediately
+  // instead of waiting for the next restart to pick it up.
+  if (isAutoFetchRunning()) scheduleAutoFetchTicks(saved.auto_fetch_interval_minutes);
   return saved;
 }
 
@@ -377,23 +384,27 @@ async function runOnce(options = {}) {
   }
 }
 
-const AUTO_FETCH_INTERVAL_MS = 5 * 60 * 1000;
+const DEFAULT_AUTO_FETCH_MINUTES = 5;
 let autoFetchTimer = null;
 
 function isAutoFetchRunning() {
   return !!autoFetchTimer;
 }
 
-function scheduleAutoFetchTicks() {
+// minutes comes from scom_settings.auto_fetch_interval_minutes (user-
+// configurable) -- falls back to the 5-minute default only if unset.
+function scheduleAutoFetchTicks(minutes) {
   if (autoFetchTimer) clearInterval(autoFetchTimer);
+  const intervalMs = Math.max(1, minutes || DEFAULT_AUTO_FETCH_MINUTES) * 60 * 1000;
   autoFetchTimer = setInterval(() => {
     runOnce({ mode: 'incremental' }).catch((e) => log.error({ err: e }, 'auto-fetch tick failed'));
-  }, AUTO_FETCH_INTERVAL_MS);
+  }, intervalMs);
 }
 
 async function startAutoFetch() {
   await pool.query(`UPDATE scom_settings SET enabled=1 WHERE id=1`);
-  scheduleAutoFetchTicks();
+  const settings = await getSettings();
+  scheduleAutoFetchTicks(settings.auto_fetch_interval_minutes);
   runOnce({ mode: 'incremental' }).catch((e) => log.error({ err: e }, 'auto-fetch kick-off failed'));
 }
 
@@ -405,8 +416,8 @@ async function stopAutoFetch() {
 async function resumeAutoFetchIfEnabled() {
   const settings = await getSettings();
   if (settings?.enabled) {
-    scheduleAutoFetchTicks();
-    log.info('auto-fetch resumed (every 5 min, incremental) from previous session');
+    scheduleAutoFetchTicks(settings.auto_fetch_interval_minutes);
+    log.info({ minutes: settings.auto_fetch_interval_minutes }, 'auto-fetch resumed (incremental) from previous session');
   }
 }
 

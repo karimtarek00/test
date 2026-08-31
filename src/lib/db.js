@@ -44,6 +44,9 @@ if (scomSettingsTableExists) {
   if (!scomSettingsCols.includes('winrm_password')) {
     db.exec('ALTER TABLE scom_settings ADD COLUMN winrm_password TEXT');
   }
+  if (!scomSettingsCols.includes('auto_fetch_interval_minutes')) {
+    db.exec('ALTER TABLE scom_settings ADD COLUMN auto_fetch_interval_minutes INTEGER NOT NULL DEFAULT 5');
+  }
 }
 
 const alertsTableExists = !!db.prepare("SELECT name FROM sqlite_master WHERE type='table' AND name='alerts'").get();

@@ -3,7 +3,7 @@ import { api } from '../api/client.js';
 import TopBar from '../components/TopBar.jsx';
 import AiSettingsPanel from '../components/AiSettingsPanel.jsx';
 
-const EMPTY_FORM = { managementServer: '', winrmUsername: '', winrmPassword: '', fullSyncIntervalMinutes: 30 };
+const EMPTY_FORM = { managementServer: '', winrmUsername: '', winrmPassword: '', fullSyncIntervalMinutes: 30, autoFetchIntervalMinutes: 5 };
 
 export default function ConfigurationPage() {
   const [form, setForm] = useState(null);
@@ -13,6 +13,7 @@ export default function ConfigurationPage() {
   const [testing, setTesting] = useState(false);
   const [testResult, setTestResult] = useState(null);
   const [runStatus, setRunStatus] = useState(null);
+  const [autoFetchBusy, setAutoFetchBusy] = useState(false);
   const pollRef = useRef(null);
 
   const load = () => {
@@ -24,6 +25,7 @@ export default function ConfigurationPage() {
         winrmUsername: s.winrm_username || '',
         winrmPassword: '',
         fullSyncIntervalMinutes: s.full_sync_interval_minutes ?? 30,
+        autoFetchIntervalMinutes: s.auto_fetch_interval_minutes ?? 5,
       });
     });
   };
@@ -59,6 +61,16 @@ export default function ConfigurationPage() {
       setTestResult({ ok: false, error: err.message });
     } finally {
       setTesting(false);
+    }
+  };
+
+  const toggleAutoFetch = async () => {
+    setAutoFetchBusy(true);
+    try {
+      await api.post(settingsRaw?.autoFetchEnabled ? '/scom/auto-fetch/stop' : '/scom/auto-fetch/start', {});
+      load();
+    } finally {
+      setAutoFetchBusy(false);
     }
   };
 
@@ -105,8 +117,23 @@ export default function ConfigurationPage() {
               <div className="field">
                 <label>Full Sync Interval (minutes)</label>
                 <input className="input" type="number" min="0" value={form.fullSyncIntervalMinutes} onChange={set('fullSyncIntervalMinutes')} />
+                <span className="text-faint" style={{ fontSize: 11 }}>How often a complete fetch runs -- the only kind of sync allowed to detect closed alerts.</span>
+              </div>
+              <div className="field">
+                <label>Auto-Sync Interval (minutes)</label>
+                <input className="input" type="number" min="1" value={form.autoFetchIntervalMinutes} onChange={set('autoFetchIntervalMinutes')} />
+                <span className="text-faint" style={{ fontSize: 11 }}>How often the lightweight background check runs, once Auto-Sync is enabled below.</span>
               </div>
             </div>
+
+            <div className="toggle-field">
+              <label>Auto-Sync {autoFetchBusy ? '(updating…)' : ''}</label>
+              <label className="toggle">
+                <input type="checkbox" checked={!!settingsRaw?.autoFetchEnabled} onChange={toggleAutoFetch} disabled={autoFetchBusy} />
+                <span className="track" />
+              </label>
+            </div>
+
             {error && <div className="error-text">{error}</div>}
             {saved && <div className="help-text">Saved.</div>}
             <div style={{ display: 'flex', gap: 10 }}>

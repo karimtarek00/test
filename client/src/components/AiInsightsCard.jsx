@@ -9,7 +9,13 @@ export default function AiInsightsCard() {
   const [refreshing, setRefreshing] = useState(false);
   const [error, setError] = useState('');
 
-  const load = () => api.get('/ai/insights').then(setData).catch(() => {});
+  // Must not implicitly return the promise chain -- useEffect treats
+  // whatever its callback returns as a cleanup function, and calling a
+  // Promise as one crashes with "destroy is not a function" on unmount,
+  // taking down the whole app (this is what broke client-side navigation
+  // to any other page: DashboardPage renders this card, so its crash on
+  // unmount corrupted the entire React tree, not just this component).
+  const load = () => { api.get('/ai/insights').then(setData).catch(() => {}); };
   useEffect(load, []);
 
   if (!data || !data.enabled) return null; // don't clutter the dashboard when AI isn't configured

@@ -38,6 +38,33 @@
   --font-mono: "JetBrains Mono", ui-monospace, "SFMono-Regular", Consolas, "Liberation Mono", Menlo, monospace;
 
   --sidebar-w: 240px;
+  --hover-overlay: rgba(255, 255, 255, 0.02);
+}
+
+/* Light theme -- every rule in this file reads colors through the
+   semantic variables above (--bg, --text, --border, etc.), never a raw hex
+   value, so overriding just these tokens re-themes the whole app with no
+   other CSS changes needed. Applied via a `data-theme="light"` attribute
+   on <html> (see ThemeToggle in TopBar.jsx), not a media query -- this is
+   an explicit user choice, not a system-preference follow. */
+[data-theme="light"] {
+  --n-900: #f4f6f9;
+  --n-800: #ffffff;
+  --n-700: #ffffff;
+  --n-600: #e4e8ee;
+  --n-500: #cdd4de;
+  --n-300: #5b6472;
+  --n-100: #10141b;
+  --text-faint: #8993a1;
+
+  --critical-bg: rgba(255, 77, 79, 0.1);
+  --warning-bg: rgba(255, 176, 32, 0.12);
+  --healthy-bg: rgba(0, 200, 150, 0.1);
+  --info-bg: rgba(38, 132, 255, 0.1);
+
+  /* On a light background, brightening a row on hover (the dark-theme
+     approach) is nearly invisible -- darken slightly instead. */
+  --hover-overlay: rgba(10, 14, 20, 0.035);
 }
 
 * { box-sizing: border-box; }
@@ -292,7 +319,7 @@ th {
 }
 td { padding: 11px 12px; border-bottom: 1px solid var(--border-soft); vertical-align: middle; }
 tr:last-child td { border-bottom: none; }
-tr.row-hover:hover td { background: rgba(255, 255, 255, 0.02); cursor: pointer; }
+tr.row-hover:hover td { background: var(--hover-overlay); cursor: pointer; }
 .cell-mono { font-family: var(--font-mono); font-size: 12.5px; color: var(--text-dim); }
 
 .table-footer { display: flex; align-items: center; justify-content: space-between; padding-top: 12px; font-size: 12.5px; color: var(--text-faint); }

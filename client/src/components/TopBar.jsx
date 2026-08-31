@@ -1,14 +1,28 @@
 import { useEffect, useRef, useState } from 'react';
 import { api } from '../api/client.js';
 import { useAuth } from '../context/AuthContext.jsx';
-import { IconBell, IconUser } from './icons.jsx';
+import { IconBell, IconUser, IconSun, IconMoon } from './icons.jsx';
+
+const THEME_KEY = 'server-watch-theme';
 
 export default function TopBar({ title, children }) {
   const { user, isAdmin, logout } = useAuth();
   const [scomStatus, setScomStatus] = useState(null); // null = unknown/loading
   const [criticalCount, setCriticalCount] = useState(0);
   const [menuOpen, setMenuOpen] = useState(false);
+  // Read from the DOM, not a module-level variable -- index.html's inline
+  // script (and any other TopBar instance's toggle) is the single source of
+  // truth, since TopBar itself remounts fresh on every page navigation.
+  const [theme, setTheme] = useState(() => document.documentElement.getAttribute('data-theme') === 'light' ? 'light' : 'dark');
   const menuRef = useRef(null);
+
+  const toggleTheme = () => {
+    const next = theme === 'light' ? 'dark' : 'light';
+    setTheme(next);
+    if (next === 'light') document.documentElement.setAttribute('data-theme', 'light');
+    else document.documentElement.removeAttribute('data-theme');
+    try { localStorage.setItem(THEME_KEY, next); } catch (e) { /* private browsing, etc. -- theme just won't persist */ }
+  };
 
   useEffect(() => {
     // /api/scom is admin-only, so only fetch it as an admin -- a viewer would
@@ -55,6 +69,9 @@ export default function TopBar({ title, children }) {
           </div>
         )}
         <div className="topbar-divider" />
+        <button className="bell-btn" title={theme === 'light' ? 'Switch to dark mode' : 'Switch to light mode'} onClick={toggleTheme}>
+          {theme === 'light' ? <IconMoon /> : <IconSun />}
+        </button>
         <button className="bell-btn" title={`${criticalCount} open critical alert${criticalCount === 1 ? '' : 's'}`}>
           <IconBell />
           {criticalCount > 0 && <span className="bell-badge">{criticalCount > 99 ? '99+' : criticalCount}</span>}
