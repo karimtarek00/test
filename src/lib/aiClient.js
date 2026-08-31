@@ -12,8 +12,16 @@ const https = require('https');
 
 const REQUEST_TIMEOUT_MS = 30000;
 
-function agentFor(settings) {
-  return settings.allow_insecure_tls ? new https.Agent({ rejectUnauthorized: false }) : undefined;
+// An https.Agent must never be handed to a plain http:// request -- Node
+// throws "Protocol \"http:\" not supported. Expected \"https:\"" the
+// instant it sees the mismatch, regardless of which module actually makes
+// the request. allow_insecure_tls only means anything for an https:// URL
+// in the first place, so this is also just correct behavior, not a
+// workaround.
+function agentFor(url, settings) {
+  return url.protocol === 'https:' && settings.allow_insecure_tls
+    ? new https.Agent({ rejectUnauthorized: false })
+    : undefined;
 }
 
 function requestJson(url, options, agent) {
@@ -89,7 +97,7 @@ async function chatComplete(settings, messages, { maxTokens = 800, temperature =
       ...(headerValue ? { [authHeader]: headerValue } : {}),
     },
     body,
-  }, agentFor(settings));
+  }, agentFor(url, settings));
 
   return extractReply(json);
 }
