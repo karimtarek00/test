@@ -11,6 +11,7 @@ const http = require('http');
 const { APP_ROOT, BACKUP_DIR } = require('./lib/paths');
 const { deployableEntries, copyEntries } = require('./lib/sync');
 const pm2 = require('./lib/pm2');
+const windowsService = require('./lib/windowsService');
 
 const HEALTH_TIMEOUT_MS = 180000;
 
@@ -39,7 +40,16 @@ function readVersion(dir) {
   }
 }
 
+// Same two-supervisor detection as cli.js/deploy.js -- a rollback has to
+// restart whichever one is actually managing this app.
 function restartApp() {
+  if (windowsService.isActive()) {
+    const result = windowsService.restart();
+    if (result.status !== 0) {
+      console.warn(`⚠ NSSM/sc reported an error restarting the service (exit ${result.status}) -- continuing to the health/version check below, which is the real verdict on whether this succeeded.`);
+    }
+    return;
+  }
   const result = pm2.describeApp() ? pm2.restart() : pm2.start();
   if (result.status !== 0) {
     console.warn(`⚠ PM2 reported an error restarting the app (exit ${result.status}) -- continuing to the health/version check below, which is the real verdict on whether this succeeded.`);

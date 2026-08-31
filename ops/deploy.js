@@ -16,6 +16,7 @@ const AdmZip = require('adm-zip');
 const { APP_ROOT, BACKUP_DIR } = require('./lib/paths');
 const { deployableEntries, copyEntries } = require('./lib/sync');
 const pm2 = require('./lib/pm2');
+const windowsService = require('./lib/windowsService');
 
 // A schema/index change that needs a one-time migration on an existing
 // database runs synchronously at boot, before the server starts accepting
@@ -79,7 +80,18 @@ function readVersion(dir) {
   }
 }
 
+// Same two-supervisor detection as cli.js -- a deploy has to restart
+// whichever one is actually managing this app (NSSM on Windows if that's
+// been installed, PM2 otherwise), or the swapped-in new version never
+// actually gets picked up.
 function restartApp() {
+  if (windowsService.isActive()) {
+    const result = windowsService.restart();
+    if (result.status !== 0) {
+      console.warn(`⚠ NSSM/sc reported an error restarting the service (exit ${result.status}) -- continuing to the health/version check below, which is the real verdict on whether this succeeded.`);
+    }
+    return;
+  }
   const result = pm2.describeApp() ? pm2.restart() : pm2.start();
   if (result.status !== 0) {
     console.warn(`⚠ PM2 reported an error restarting the app (exit ${result.status}) -- continuing to the health/version check below, which is the real verdict on whether this succeeded.`);

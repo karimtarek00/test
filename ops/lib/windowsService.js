@@ -12,6 +12,14 @@ function isVendored() {
   return fs.existsSync(NSSM_BIN);
 }
 
+// Single source of truth for "is this app currently running under the NSSM
+// Windows Service, instead of PM2" -- used by cli.js, deploy.js, and
+// rollback.js so all three treat the two supervisors consistently instead
+// of each guessing separately.
+function isActive() {
+  return process.platform === 'win32' && serviceExists();
+}
+
 function runNssm(args) {
   return spawnSync(NSSM_BIN, args, { stdio: 'pipe', encoding: 'utf8' });
 }
@@ -125,4 +133,4 @@ function install() {
   return { ok: true, serviceName: WINDOWS_SERVICE_NAME };
 }
 
-module.exports = { isVendored, serviceExists, describe, start, stop, restart, remove, install };
+module.exports = { isVendored, serviceExists, isActive, describe, start, stop, restart, remove, install };

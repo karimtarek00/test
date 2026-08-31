@@ -11,13 +11,11 @@ const { APP_NAME, WINDOWS_SERVICE_NAME, OUT_LOG, ERROR_LOG } = require('./lib/pa
 // Two supervisors this app can run under: PM2 (default, cross-platform) or,
 // on Windows, an NSSM-wrapped Windows Service as a fallback for
 // environments where PM2 itself turns out to be the unreliable part (see
-// ops/vendor/README.md). Detected automatically -- once the NSSM service
-// has actually been installed (npm run setup:windows-service), every
-// service:* command here uses it instead, with no separate command set to
-// remember day to day.
-function useWindowsService() {
-  return process.platform === 'win32' && windowsService.serviceExists();
-}
+// ops/vendor/README.md). Detected automatically via windowsService.isActive()
+// (shared with deploy.js/rollback.js) -- once the NSSM service has actually
+// been installed (npm run setup:windows-service), every service:* command
+// here uses it instead, with no separate command set to remember day to day.
+const useWindowsService = windowsService.isActive;
 
 function parseArgs(argv) {
   const flags = {};
