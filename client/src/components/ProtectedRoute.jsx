@@ -2,6 +2,7 @@ import { useState } from 'react';
 import { Navigate, Outlet } from 'react-router-dom';
 import { useAuth } from '../context/AuthContext.jsx';
 import Sidebar from './Sidebar.jsx';
+import AiChatWidget from './AiChatWidget.jsx';
 
 export function ProtectedLayout() {
   const { user, loading } = useAuth();
@@ -16,6 +17,7 @@ export function ProtectedLayout() {
       <div className="main">
         <Outlet />
       </div>
+      <AiChatWidget />
     </div>
   );
 }

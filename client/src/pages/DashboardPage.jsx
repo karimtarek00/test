@@ -3,6 +3,7 @@ import { Link } from 'react-router-dom';
 import { api } from '../api/client.js';
 import TopBar from '../components/TopBar.jsx';
 import SeverityBadge from '../components/SeverityBadge.jsx';
+import AiInsightsCard from '../components/AiInsightsCard.jsx';
 import { IconBell, IconServer, IconPulse, IconShield } from '../components/icons.jsx';
 
 export default function DashboardPage() {
@@ -56,6 +57,8 @@ export default function DashboardPage() {
             ))
           )}
         </div>
+
+        <AiInsightsCard />
 
         <div className="panel">
           <div className="panel-header">

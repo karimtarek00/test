@@ -1,18 +1,24 @@
-import { useEffect, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import { api } from '../api/client.js';
 import TopBar from '../components/TopBar.jsx';
+import AiSettingsPanel from '../components/AiSettingsPanel.jsx';
 
 const EMPTY_FORM = { sqlHost: '', sqlPort: '', sqlDatabase: '', sqlUsername: '', sqlPassword: '', fullSyncIntervalMinutes: 30 };
 
 export default function ConfigurationPage() {
   const [form, setForm] = useState(null);
-  const [connected, setConnected] = useState(false);
+  const [settingsRaw, setSettingsRaw] = useState(null);
   const [saved, setSaved] = useState(false);
   const [error, setError] = useState('');
+  const [testing, setTesting] = useState(false);
+  const [testResult, setTestResult] = useState(null);
+  const [runStatus, setRunStatus] = useState(null);
+  const pollRef = useRef(null);
 
   const load = () => {
     api.get('/scom/settings').then((data) => {
       const s = data.settings || {};
+      setSettingsRaw(s);
       setForm({
         sqlHost: s.sql_host || '',
         sqlPort: s.sql_port || '',
@@ -21,14 +27,15 @@ export default function ConfigurationPage() {
         sqlPassword: s.hasPassword ? '••••••••' : '',
         fullSyncIntervalMinutes: s.full_sync_interval_minutes ?? 30,
       });
-      setConnected(!!(s.sql_host && s.last_sync_status === 'ok'));
     });
   };
 
   useEffect(load, []);
+  useEffect(() => () => clearInterval(pollRef.current), []);
 
   if (!form) return <div className="content"><span className="text-dim">Loading…</span></div>;
 
+  const connected = settingsRaw?.sql_host && settingsRaw?.last_sync_status === 'ok';
   const set = (key) => (e) => setForm((f) => ({ ...f, [key]: e.target.value }));
 
   const submit = async (e) => {
@@ -46,6 +53,35 @@ export default function ConfigurationPage() {
     }
   };
 
+  const testConnection = async () => {
+    setTesting(true);
+    setTestResult(null);
+    try {
+      const payload = { ...form };
+      if (payload.sqlPassword === '••••••••') delete payload.sqlPassword;
+      const data = await api.post('/scom/test', payload);
+      setTestResult(data);
+    } catch (err) {
+      setTestResult({ ok: false, error: err.message });
+    } finally {
+      setTesting(false);
+    }
+  };
+
+  const runSyncNow = async () => {
+    const data = await api.post('/scom/run', { mode: 'full' });
+    if (data.skipped) { setRunStatus({ error: data.error }); return; }
+    setRunStatus({ running: true });
+    pollRef.current = setInterval(async () => {
+      const status = await api.get('/scom/run/status');
+      setRunStatus(status);
+      if (!status.running) {
+        clearInterval(pollRef.current);
+        load();
+      }
+    }, 1200);
+  };
+
   return (
     <>
       <TopBar title="Configuration" />
@@ -56,8 +92,7 @@ export default function ConfigurationPage() {
             <span className={`badge ${connected ? 'healthy' : 'warning'}`}><span className="dot" />{connected ? 'Connected' : 'Not Connected'}</span>
           </div>
           <p className="text-dim" style={{ marginTop: 0, fontSize: 13 }}>
-            Read-only login to the <code>OperationsManager</code> database. The sync engine (
-            <code>src/lib/scomSync.js</code>) is scaffolded but stays disabled until these are set and the actual SQL query is wired in.
+            Read-only login to the <code>OperationsManager</code> database.
           </p>
           <form onSubmit={submit}>
             <div className="modal-grid">
@@ -88,9 +123,44 @@ export default function ConfigurationPage() {
             </div>
             {error && <div className="error-text">{error}</div>}
             {saved && <div className="help-text">Saved.</div>}
-            <button className="btn" type="submit">Save</button>
+            <div style={{ display: 'flex', gap: 10 }}>
+              <button className="btn" type="submit">Save</button>
+              <button className="btn-secondary btn" type="button" onClick={testConnection} disabled={testing}>
+                {testing ? 'Testing…' : 'Test Connection'}
+              </button>
+            </div>
+            {testResult && (
+              <div className={testResult.ok ? 'help-text' : 'error-text'} style={{ marginTop: 10 }}>
+                {testResult.ok ? '✓ Connected successfully.' : `✗ ${testResult.error}`}
+              </div>
+            )}
           </form>
         </div>
+
+        <div className="panel">
+          <div className="panel-header">
+            <span className="panel-title">Sync Status</span>
+          </div>
+          <div className="drawer-row"><span className="k">Last sync</span><span className="v">{settingsRaw?.last_sync_at ? new Date(settingsRaw.last_sync_at).toLocaleString() : 'Never'}</span></div>
+          <div className="drawer-row"><span className="k">Status</span><span className="v">{settingsRaw?.last_sync_status || '—'}</span></div>
+          <div className="drawer-row"><span className="k">Open / New / Closed</span><span className="v">{settingsRaw?.last_sync_open_count ?? '—'} / {settingsRaw?.last_sync_new_count ?? '—'} / {settingsRaw?.last_sync_closed_count ?? '—'}</span></div>
+          {settingsRaw?.last_sync_error && <div className="drawer-row"><span className="k">Error</span><span className="v text-dim">{settingsRaw.last_sync_error}</span></div>}
+          <div style={{ marginTop: 14 }}>
+            <button className="btn" type="button" onClick={runSyncNow} disabled={runStatus?.running}>
+              {runStatus?.running ? 'Syncing…' : 'Run Sync Now'}
+            </button>
+            {runStatus?.error && <div className="error-text" style={{ marginTop: 10 }}>{runStatus.error}</div>}
+            {runStatus?.lastResult && !runStatus.running && (
+              <div className="help-text" style={{ marginTop: 10 }}>
+                {runStatus.lastResult.ok
+                  ? `Done: ${runStatus.lastResult.open} open (${runStatus.lastResult.created} new, ${runStatus.lastResult.updated} updated, ${runStatus.lastResult.closed} closed).`
+                  : `Failed: ${runStatus.lastResult.error}`}
+              </div>
+            )}
+          </div>
+        </div>
+
+        <AiSettingsPanel />
       </div>
     </>
   );

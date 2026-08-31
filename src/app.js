@@ -27,6 +27,7 @@ const scomRouter = require('./routes/scom');
 const authRouter = require('./routes/auth');
 const usersRouter = require('./routes/users');
 const criticalRouter = require('./routes/critical');
+const aiRouter = require('./routes/ai');
 
 const log = logger.forModule('http');
 
@@ -125,6 +126,10 @@ function buildApp() {
   app.use('/api/scom', auth.requireAuth, auth.requireAdmin, scomRouter);
   app.use('/api/users', auth.requireAuth, auth.requireAdmin, usersRouter);
   app.use('/api/critical', auth.requireAuth, criticalRouter);
+  // Not all-admin -- GET /insights readable by any authenticated user
+  // (Dashboard insights card), /settings/test/refresh are gated per-route
+  // inside ai.js (requireAdmin).
+  app.use('/api/ai', auth.requireAuth, aiRouter);
 
   app.get('/api/metrics', auth.requireAuth, auth.requireAdmin, (req, res) => {
     res.json(metrics.snapshot());

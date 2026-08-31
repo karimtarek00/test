@@ -35,6 +35,29 @@ router.put('/settings', asyncHandler(async (req, res) => {
   res.json({ settings: sanitize(saved) });
 }));
 
+// Validates the SQL connection using currently-entered (not-yet-saved)
+// values, without importing anything -- lets an admin verify credentials
+// before saving. Deliberately always responds 200: {ok:false, error} is a
+// normal outcome of a connectivity/credential test, not a server error.
+router.post('/test', asyncHandler(async (req, res) => {
+  const current = await scomSync.getSettings();
+  const { sqlHost, sqlPort, sqlDatabase, sqlUsername, sqlPassword } = req.body || {};
+  const candidate = {
+    sql_host: sqlHost || current?.sql_host,
+    sql_port: sqlPort || current?.sql_port,
+    sql_database: sqlDatabase || current?.sql_database,
+    sql_username: sqlUsername || current?.sql_username,
+    sql_password: sqlPassword === undefined || sqlPassword === '' ? current?.sql_password : sqlPassword,
+  };
+  try {
+    await scomSync.testConnection(candidate);
+    res.json({ ok: true });
+  } catch (err) {
+    log.warn({ err }, 'scom connection test failed');
+    res.json({ ok: false, error: err.message });
+  }
+}));
+
 // Manual/on-demand sync trigger. Fires runOnce() and returns immediately --
 // once SQL access is wired in, a real fetch could take a while, and that
 // shouldn't be tied to a single HTTP request's lifetime. Poll

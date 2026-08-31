@@ -68,10 +68,29 @@ before swapping anything — that backup is what a rollback restores.
 - `backups/` — snapshots created by `ops/deploy.js`/`ops/rollback.js` (and one pre-restructure snapshot from this session)
 - `logs/` — PM2-captured stdout/stderr (pino JSON), rotated by `ops/rotateLogs.js`
 
+## SCOM SQL sync
+
+`src/lib/scomSync.js` connects to `OperationsManager` via `mssql` and syncs the
+`Alert`/`BaseManagedEntity` tables (incremental + full modes, closure
+detection gated on a complete fetch, first-seen `created_at`/TimeRaised vs
+last-seen `last_modified`/LastModified kept as two separate fields per the
+correctness rule that bit a similar integration before). Table/column names
+match SCOM's documented schema but haven't been run against a live instance
+in this environment — verify once real SQL access is available, and adjust
+the query in `fetchOpenAlerts()` if this installation's schema differs.
+Configuration page has Test Connection + Run Sync Now with live progress.
+
+## AI integration
+
+`src/lib/aiClient.js` (generic chat-completions HTTP client, tolerant of
+minor response-shape differences between gateways) + `src/lib/aiDigest.js`
+(compact real-data digest + grounding system prompt) + `src/routes/ai.js`
+power a Dashboard insights card and a floating "Ask AI" chat widget —
+both hidden until an admin configures and enables it on the Configuration
+page. Nothing is sent to any endpoint until Enabled is checked.
+
 ## Known gaps (next steps)
 
-1. **SCOM SQL sync** — `fetchOpenAlerts()` in `src/lib/scomSync.js` needs the `mssql` query implementation once `OperationsManager` read access is available. Settings storage, scheduling, and closure-detection safety rules are already in place.
-2. **Server inventory** — currently seeded/derived from alert data only; import a real export via Import Data once available.
-3. **Classification axis** (OS / Prod-Non-Prod / business unit) and Critical Servers grouping are placeholders — currently grouped by a guessed data-center prefix from hostnames.
-4. **AI insights integration** — not yet ported, pending confirmation of an internal AI gateway to reuse.
-5. **Word/Excel reports** — only the PDF summary report is implemented so far; `docx`/`xlsx` report generation can be added to `src/lib/reportGenerators.js` the same way.
+1. **Server inventory** — currently seeded/derived from alert data only; import a real export via Import Data once available.
+2. **Classification axis** (OS / Prod-Non-Prod / business unit) and Critical Servers grouping are placeholders — currently grouped by a guessed data-center prefix from hostnames.
+3. **Word/Excel reports** — only the PDF summary report is implemented so far; `docx`/`xlsx` report generation can be added to `src/lib/reportGenerators.js` the same way.

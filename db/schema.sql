@@ -96,6 +96,41 @@ CREATE TABLE IF NOT EXISTS scom_settings (
 );
 INSERT OR IGNORE INTO scom_settings (id) VALUES (1);
 
+-- Single-row table holding the internal-AI connection settings + cached
+-- insight. Deliberately read-only in what it produces -- this integration
+-- analyzes and predicts, it never writes back to servers/alerts.
+CREATE TABLE IF NOT EXISTS ai_settings (
+  id                  INTEGER PRIMARY KEY CHECK (id = 1),
+  base_url            TEXT,
+  api_key             TEXT,
+  -- Header name the API key is sent in, e.g. 'Authorization' or a custom
+  -- header some internal gateways use instead, e.g. 'X-API-Key'.
+  auth_header         TEXT NOT NULL DEFAULT 'Authorization',
+  -- Prefix placed before the key in auth_header's value, e.g. 'Bearer' for
+  -- 'Authorization: Bearer <key>'. Blank means send the raw key with no
+  -- prefix (some custom gateways expect that).
+  auth_scheme         TEXT NOT NULL DEFAULT 'Bearer',
+  -- Optional model identifier some internal gateways require in the request
+  -- body (multi-model gateways). Left blank/omitted if not applicable.
+  model               TEXT,
+  -- An internal-only AI gateway is just as likely to sit behind a
+  -- self-signed or internal-CA certificate as SCOM itself -- off by
+  -- default, only meant to be switched on deliberately once that's
+  -- confirmed to actually be the issue.
+  allow_insecure_tls  INTEGER NOT NULL DEFAULT 0,
+  enabled             INTEGER NOT NULL DEFAULT 0,
+  last_test_at        TEXT,
+  last_test_status    TEXT,   -- 'ok' | 'error'
+  last_test_error     TEXT,
+  -- Cached generated insight -- regenerating on every Dashboard load would
+  -- mean a live LLM call per page view; this is cache-until-refresh.
+  last_insight_text   TEXT,
+  last_insight_at     TEXT,
+  last_insight_error  TEXT,
+  updated_at          TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))
+);
+INSERT OR IGNORE INTO ai_settings (id) VALUES (1);
+
 -- Login accounts. Two roles: 'admin' (full access incl. Configuration and
 -- Import Data) and 'viewer' (read-only). Passwords are salted + hashed with
 -- scrypt -- see src/lib/auth.js. Default accounts seeded once in auth.js.
