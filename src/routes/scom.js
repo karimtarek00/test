@@ -6,11 +6,9 @@ const logger = require('../lib/logger');
 const log = logger.forModule('scom-route');
 const router = express.Router();
 
-// Never echo the stored password back to the client.
 function sanitize(settings) {
   if (!settings) return null;
-  const { sql_password, ...rest } = settings;
-  return { ...rest, hasPassword: !!sql_password, autoFetchEnabled: !!settings.enabled };
+  return { ...settings, autoFetchEnabled: !!settings.enabled };
 }
 
 router.get('/settings', asyncHandler(async (req, res) => {
@@ -18,37 +16,23 @@ router.get('/settings', asyncHandler(async (req, res) => {
 }));
 
 router.put('/settings', asyncHandler(async (req, res) => {
-  const { sqlHost, sqlPort, sqlDatabase, sqlUsername, sqlPassword, fullSyncIntervalMinutes } = req.body;
-  const current = await scomSync.getSettings();
+  const { managementServer, fullSyncIntervalMinutes } = req.body;
   const saved = await scomSync.saveSettings({
-    sql_host: sqlHost?.trim(),
-    sql_port: sqlPort,
-    sql_database: sqlDatabase?.trim(),
-    sql_username: sqlUsername?.trim(),
-    // Keep the existing password if the client didn't send a new one -- the
-    // GET route never returns it, so an unrelated settings edit shouldn't
-    // wipe out a previously saved credential.
-    sql_password: sqlPassword === undefined || sqlPassword === '' ? current?.sql_password : sqlPassword,
+    management_server: managementServer?.trim(),
     full_sync_interval_minutes: fullSyncIntervalMinutes,
   });
   log.info({ userId: req.user?.id }, 'scom settings updated');
   res.json({ settings: sanitize(saved) });
 }));
 
-// Validates the SQL connection using currently-entered (not-yet-saved)
-// values, without importing anything -- lets an admin verify credentials
-// before saving. Deliberately always responds 200: {ok:false, error} is a
-// normal outcome of a connectivity/credential test, not a server error.
+// Validates PowerShell/Get-SCOMAlert access using the currently-entered
+// (not-yet-saved) management server value. Deliberately always responds
+// 200: {ok:false, error} is a normal outcome of a connectivity/access test,
+// not a server error.
 router.post('/test', asyncHandler(async (req, res) => {
   const current = await scomSync.getSettings();
-  const { sqlHost, sqlPort, sqlDatabase, sqlUsername, sqlPassword } = req.body || {};
-  const candidate = {
-    sql_host: sqlHost || current?.sql_host,
-    sql_port: sqlPort || current?.sql_port,
-    sql_database: sqlDatabase || current?.sql_database,
-    sql_username: sqlUsername || current?.sql_username,
-    sql_password: sqlPassword === undefined || sqlPassword === '' ? current?.sql_password : sqlPassword,
-  };
+  const { managementServer } = req.body || {};
+  const candidate = { management_server: managementServer !== undefined ? managementServer : current?.management_server };
   try {
     await scomSync.testConnection(candidate);
     res.json({ ok: true });
@@ -59,9 +43,9 @@ router.post('/test', asyncHandler(async (req, res) => {
 }));
 
 // Manual/on-demand sync trigger. Fires runOnce() and returns immediately --
-// once SQL access is wired in, a real fetch could take a while, and that
-// shouldn't be tied to a single HTTP request's lifetime. Poll
-// GET /run/status for progress and the final result.
+// a real Get-SCOMAlert call can take a while, and that shouldn't be tied to
+// a single HTTP request's lifetime. Poll GET /run/status for progress and
+// the final result.
 router.post('/run', (req, res) => {
   const status = scomSync.getRunStatus();
   if (status.running) {

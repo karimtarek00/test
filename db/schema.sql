@@ -74,11 +74,14 @@ CREATE TABLE IF NOT EXISTS import_jobs (
 -- sync status. Equivalent of the reference app's nnmi_settings.
 CREATE TABLE IF NOT EXISTS scom_settings (
   id                          INTEGER PRIMARY KEY CHECK (id = 1),
-  sql_host                    TEXT,
-  sql_port                    INTEGER,
-  sql_database                TEXT,
-  sql_username                TEXT,
-  sql_password                TEXT,
+  -- Data is pulled via the SCOM PowerShell module (Get-SCOMAlert), not a
+  -- direct SQL connection -- see scomSync.js for why. No credentials are
+  -- stored here: the Node process's own Windows identity (or whatever
+  -- New-SCOMManagementGroupConnection resolves) is what authenticates.
+  -- management_server is only needed if this app ISN'T already running on
+  -- (or already connected to) a SCOM Management Server -- leave blank to
+  -- use whatever connection context is already active.
+  management_server           TEXT,
   enabled                     INTEGER NOT NULL DEFAULT 0,  -- auto-fetch (every 5 min, incremental) on/off
   last_sync_at                TEXT,
   last_sync_status            TEXT,

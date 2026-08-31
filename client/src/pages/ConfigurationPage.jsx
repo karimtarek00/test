@@ -3,7 +3,7 @@ import { api } from '../api/client.js';
 import TopBar from '../components/TopBar.jsx';
 import AiSettingsPanel from '../components/AiSettingsPanel.jsx';
 
-const EMPTY_FORM = { sqlHost: '', sqlPort: '', sqlDatabase: '', sqlUsername: '', sqlPassword: '', fullSyncIntervalMinutes: 30 };
+const EMPTY_FORM = { managementServer: '', fullSyncIntervalMinutes: 30 };
 
 export default function ConfigurationPage() {
   const [form, setForm] = useState(null);
@@ -20,11 +20,7 @@ export default function ConfigurationPage() {
       const s = data.settings || {};
       setSettingsRaw(s);
       setForm({
-        sqlHost: s.sql_host || '',
-        sqlPort: s.sql_port || '',
-        sqlDatabase: s.sql_database || '',
-        sqlUsername: s.sql_username || '',
-        sqlPassword: s.hasPassword ? '••••••••' : '',
+        managementServer: s.management_server || '',
         fullSyncIntervalMinutes: s.full_sync_interval_minutes ?? 30,
       });
     });
@@ -35,17 +31,15 @@ export default function ConfigurationPage() {
 
   if (!form) return <div className="content"><span className="text-dim">Loading…</span></div>;
 
-  const connected = settingsRaw?.sql_host && settingsRaw?.last_sync_status === 'ok';
+  const connected = settingsRaw?.last_sync_status === 'ok';
   const set = (key) => (e) => setForm((f) => ({ ...f, [key]: e.target.value }));
 
   const submit = async (e) => {
     e.preventDefault();
     setError('');
     setSaved(false);
-    const payload = { ...form };
-    if (payload.sqlPassword === '••••••••') delete payload.sqlPassword; // unchanged - keep existing credential
     try {
-      await api.put('/scom/settings', payload);
+      await api.put('/scom/settings', form);
       setSaved(true);
       load();
     } catch (err) {
@@ -57,9 +51,7 @@ export default function ConfigurationPage() {
     setTesting(true);
     setTestResult(null);
     try {
-      const payload = { ...form };
-      if (payload.sqlPassword === '••••••••') delete payload.sqlPassword;
-      const data = await api.post('/scom/test', payload);
+      const data = await api.post('/scom/test', form);
       setTestResult(data);
     } catch (err) {
       setTestResult({ ok: false, error: err.message });
@@ -88,37 +80,21 @@ export default function ConfigurationPage() {
       <div className="content">
         <div className="panel">
           <div className="panel-header">
-            <span className="panel-title">SCOM SQL Connection</span>
+            <span className="panel-title">SCOM Connection</span>
             <span className={`badge ${connected ? 'healthy' : 'warning'}`}><span className="dot" />{connected ? 'Connected' : 'Not Connected'}</span>
           </div>
           <p className="text-dim" style={{ marginTop: 0, fontSize: 13 }}>
-            Read-only login to the <code>OperationsManager</code> database.
+            Pulls alerts via the SCOM PowerShell module (<code>Get-SCOMAlert</code>) — no credentials stored here; this app's own Windows identity authenticates. Leave Management Server blank if this app runs directly on (or is already connected to) a SCOM Management Server; otherwise enter the management server's hostname to connect remotely (requires the SCOM Operations Console installed on this app's host).
           </p>
           <form onSubmit={submit}>
             <div className="modal-grid">
               <div className="field">
-                <label>SQL Host</label>
-                <input className="input" value={form.sqlHost} onChange={set('sqlHost')} placeholder="scom-sql01.corp.local" />
-              </div>
-              <div className="field">
-                <label>Port</label>
-                <input className="input" value={form.sqlPort} onChange={set('sqlPort')} placeholder="1433" />
-              </div>
-              <div className="field">
-                <label>Database</label>
-                <input className="input" value={form.sqlDatabase} onChange={set('sqlDatabase')} placeholder="OperationsManager" />
+                <label>Management Server (optional)</label>
+                <input className="input" value={form.managementServer} onChange={set('managementServer')} placeholder="scom-mgmt01.corp.local" />
               </div>
               <div className="field">
                 <label>Full Sync Interval (minutes)</label>
                 <input className="input" type="number" min="0" value={form.fullSyncIntervalMinutes} onChange={set('fullSyncIntervalMinutes')} />
-              </div>
-              <div className="field">
-                <label>Username</label>
-                <input className="input" value={form.sqlUsername} onChange={set('sqlUsername')} />
-              </div>
-              <div className="field">
-                <label>Password</label>
-                <input type="password" className="input" value={form.sqlPassword} onChange={set('sqlPassword')} />
               </div>
             </div>
             {error && <div className="error-text">{error}</div>}

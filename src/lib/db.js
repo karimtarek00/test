@@ -25,6 +25,21 @@ db.exec('PRAGMA synchronous = NORMAL');
 db.exec('PRAGMA cache_size = -64000');
 db.exec('PRAGMA mmap_size = 268435456');
 
+// A database created before scom_settings switched from a direct SQL
+// connection to the PowerShell (Get-SCOMAlert) access method won't have
+// this column, and schema.sql's CREATE TABLE IF NOT EXISTS is a no-op
+// against an existing table -- add it here first if missing. The old sql_*
+// columns are deliberately left in place rather than dropped: harmless
+// orphaned columns are a much smaller risk than a DROP COLUMN on a
+// production database this app doesn't otherwise need to touch.
+const scomSettingsTableExists = !!db.prepare("SELECT name FROM sqlite_master WHERE type='table' AND name='scom_settings'").get();
+if (scomSettingsTableExists) {
+  const scomSettingsCols = db.prepare('PRAGMA table_info(scom_settings)').all().map((c) => c.name);
+  if (!scomSettingsCols.includes('management_server')) {
+    db.exec('ALTER TABLE scom_settings ADD COLUMN management_server TEXT');
+  }
+}
+
 // Zero-setup: apply the schema on first run (and no-op on every run after,
 // since every statement in schema.sql is CREATE ... IF NOT EXISTS).
 const schemaPath = path.join(__dirname, '..', '..', 'db', 'schema.sql');
