@@ -102,6 +102,15 @@ CREATE TABLE IF NOT EXISTS scom_settings (
   -- closure-detection full sync, and only a full run may ever close an
   -- alert (see scomSync.js's file header for why).
   auto_fetch_interval_minutes INTEGER NOT NULL DEFAULT 5,
+  -- Tracked separately from last_sync_*/last_sync_status above, which
+  -- reflect whichever kind of run happened most recently (full or
+  -- incremental) -- an admin watching the Auto-Sync panel specifically
+  -- wants to know "is the background tick actually running and healthy",
+  -- without that view getting overwritten by an unrelated full-sync result.
+  auto_fetch_run_count        INTEGER NOT NULL DEFAULT 0,
+  last_autofetch_at           TEXT,
+  last_autofetch_status       TEXT,   -- 'ok' | 'error'
+  last_autofetch_error        TEXT,
   last_sync_at                TEXT,
   last_sync_status            TEXT,
   last_sync_error             TEXT,

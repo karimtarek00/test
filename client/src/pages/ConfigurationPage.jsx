@@ -33,6 +33,19 @@ export default function ConfigurationPage() {
   useEffect(load, []);
   useEffect(() => () => clearInterval(pollRef.current), []);
 
+  useEffect(() => {
+    // Status-only refresh (Sync Status + Auto-Sync numbers) -- deliberately
+    // does NOT touch `form`, since load() would overwrite whatever the
+    // admin is mid-typing (a new password, a server address) every tick.
+    // This is what actually needs to update live: an auto-fetch tick or a
+    // scheduled full sync happening in the background was otherwise
+    // invisible until a manual page reload.
+    const timer = setInterval(() => {
+      api.get('/scom/settings').then((data) => setSettingsRaw(data.settings || {})).catch(() => {});
+    }, 20000);
+    return () => clearInterval(timer);
+  }, []);
+
   if (!form) return <div className="content"><span className="text-dim">Loading…</span></div>;
 
   const connected = settingsRaw?.last_sync_status === 'ok';
@@ -133,6 +146,10 @@ export default function ConfigurationPage() {
                 <span className="track" />
               </label>
             </div>
+            <div className="drawer-row"><span className="k">Auto-Sync status</span><span className="v">{settingsRaw?.autoFetchEnabled ? (settingsRaw?.last_autofetch_status === 'error' ? 'Enabled — last tick failed' : 'Enabled — running') : 'Disabled'}</span></div>
+            <div className="drawer-row"><span className="k">Ticks run</span><span className="v">{settingsRaw?.auto_fetch_run_count ?? 0}</span></div>
+            <div className="drawer-row"><span className="k">Last tick</span><span className="v">{settingsRaw?.last_autofetch_at ? new Date(settingsRaw.last_autofetch_at).toLocaleString() : 'Never'}</span></div>
+            {settingsRaw?.last_autofetch_error && <div className="drawer-row"><span className="k">Last tick error</span><span className="v text-dim">{settingsRaw.last_autofetch_error}</span></div>}
 
             {error && <div className="error-text">{error}</div>}
             {saved && <div className="help-text">Saved.</div>}

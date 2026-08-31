@@ -6,12 +6,21 @@ import SeverityBadge from '../components/SeverityBadge.jsx';
 import AiInsightsCard from '../components/AiInsightsCard.jsx';
 import { IconBell, IconServer, IconPulse, IconShield } from '../components/icons.jsx';
 
+const REFRESH_INTERVAL_MS = 30000;
+
 export default function DashboardPage() {
   const [data, setData] = useState(null);
   const [error, setError] = useState('');
 
   useEffect(() => {
-    api.get('/dashboard/summary').then(setData).catch((e) => setError(e.message));
+    const load = () => api.get('/dashboard/summary').then(setData).catch((e) => setError(e.message));
+    load();
+    // The KPIs/recent alerts here reflect whatever the background auto-sync
+    // or a scheduled full sync just wrote to the database -- without this,
+    // the only way to see new data was a manual browser reload, which read
+    // as "the dashboard doesn't update" even when syncing was working fine.
+    const timer = setInterval(load, REFRESH_INTERVAL_MS);
+    return () => clearInterval(timer);
   }, []);
 
   if (error) return <div className="content"><div className="panel error-text">{error}</div></div>;

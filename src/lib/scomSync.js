@@ -368,6 +368,19 @@ async function runOnce(options = {}) {
          last_sync_open_count=$2, last_sync_new_count=$3, last_sync_closed_count=$4, last_sync_mode=$5 WHERE id=1`,
       [result.at, result.open, result.created, result.closed, mode]
     );
+    // Tracked separately from last_sync_* above -- those reflect whichever
+    // run happened most recently (full or incremental), which would hide a
+    // successful auto-fetch tick's own history the next time a full sync
+    // runs and overwrites the same fields. auto_fetch_run_count only counts
+    // incremental ticks, so it answers "is the background sync actually
+    // running" independent of manual full syncs.
+    if (mode === 'incremental') {
+      await pool.query(
+        `UPDATE scom_settings SET auto_fetch_run_count = auto_fetch_run_count + 1,
+           last_autofetch_at=$1, last_autofetch_status='ok', last_autofetch_error=NULL WHERE id=1`,
+        [result.at]
+      );
+    }
     lastResult = result;
     return result;
   } catch (err) {
@@ -375,6 +388,13 @@ async function runOnce(options = {}) {
       `UPDATE scom_settings SET last_sync_at=$1, last_sync_status='error', last_sync_error=$2, last_sync_mode=$3 WHERE id=1`,
       [new Date().toISOString(), err.message, mode]
     );
+    if (mode === 'incremental') {
+      await pool.query(
+        `UPDATE scom_settings SET auto_fetch_run_count = auto_fetch_run_count + 1,
+           last_autofetch_at=$1, last_autofetch_status='error', last_autofetch_error=$2 WHERE id=1`,
+        [new Date().toISOString(), err.message]
+      );
+    }
     lastResult = { ok: false, error: err.message, at: new Date().toISOString(), mode };
     throw err;
   } finally {

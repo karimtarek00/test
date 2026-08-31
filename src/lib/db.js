@@ -47,6 +47,18 @@ if (scomSettingsTableExists) {
   if (!scomSettingsCols.includes('auto_fetch_interval_minutes')) {
     db.exec('ALTER TABLE scom_settings ADD COLUMN auto_fetch_interval_minutes INTEGER NOT NULL DEFAULT 5');
   }
+  if (!scomSettingsCols.includes('auto_fetch_run_count')) {
+    db.exec('ALTER TABLE scom_settings ADD COLUMN auto_fetch_run_count INTEGER NOT NULL DEFAULT 0');
+  }
+  if (!scomSettingsCols.includes('last_autofetch_at')) {
+    db.exec('ALTER TABLE scom_settings ADD COLUMN last_autofetch_at TEXT');
+  }
+  if (!scomSettingsCols.includes('last_autofetch_status')) {
+    db.exec('ALTER TABLE scom_settings ADD COLUMN last_autofetch_status TEXT');
+  }
+  if (!scomSettingsCols.includes('last_autofetch_error')) {
+    db.exec('ALTER TABLE scom_settings ADD COLUMN last_autofetch_error TEXT');
+  }
 }
 
 const alertsTableExists = !!db.prepare("SELECT name FROM sqlite_master WHERE type='table' AND name='alerts'").get();
