@@ -78,6 +78,22 @@ CREATE TABLE IF NOT EXISTS import_jobs (
   created_at      TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))
 );
 
+-- Report generation history. `params` holds enough to regenerate the exact
+-- same report on demand (a re-download re-runs the query against current
+-- data rather than storing the generated file itself, which would bloat
+-- this database with binary blobs for no real benefit).
+CREATE TABLE IF NOT EXISTS report_jobs (
+  id              INTEGER PRIMARY KEY AUTOINCREMENT,
+  report_type     TEXT NOT NULL CHECK (report_type IN ('inventory','alerts','summary')),
+  format          TEXT NOT NULL CHECK (format IN ('pdf','docx','xlsx')),
+  params          TEXT NOT NULL DEFAULT '{}',  -- JSON: {from, to, severity, server, alertName}
+  requested_by    INTEGER REFERENCES users(id) ON DELETE SET NULL,
+  status          TEXT NOT NULL DEFAULT 'completed',  -- 'completed' | 'failed'
+  error           TEXT,
+  created_at      TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))
+);
+CREATE INDEX IF NOT EXISTS idx_report_jobs_created ON report_jobs(created_at);
+
 -- Single-row table holding the live SCOM SQL connection settings + last
 -- sync status. Equivalent of the reference app's nnmi_settings.
 CREATE TABLE IF NOT EXISTS scom_settings (
