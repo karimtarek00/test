@@ -25,18 +25,38 @@ db.exec('PRAGMA synchronous = NORMAL');
 db.exec('PRAGMA cache_size = -64000');
 db.exec('PRAGMA mmap_size = 268435456');
 
-// A database created before scom_settings switched from a direct SQL
-// connection to the PowerShell (Get-SCOMAlert) access method won't have
-// this column, and schema.sql's CREATE TABLE IF NOT EXISTS is a no-op
-// against an existing table -- add it here first if missing. The old sql_*
-// columns are deliberately left in place rather than dropped: harmless
-// orphaned columns are a much smaller risk than a DROP COLUMN on a
-// production database this app doesn't otherwise need to touch.
+// A database created before scom_settings switched access methods (direct
+// SQL -> local PowerShell module -> WinRM Invoke-Command) won't have these
+// columns, and schema.sql's CREATE TABLE IF NOT EXISTS is a no-op against an
+// existing table -- add them here first if missing. Old columns from
+// earlier approaches (sql_*) are deliberately left in place rather than
+// dropped: harmless orphaned columns are a much smaller risk than a DROP
+// COLUMN on a production database this app doesn't otherwise need to touch.
 const scomSettingsTableExists = !!db.prepare("SELECT name FROM sqlite_master WHERE type='table' AND name='scom_settings'").get();
 if (scomSettingsTableExists) {
   const scomSettingsCols = db.prepare('PRAGMA table_info(scom_settings)').all().map((c) => c.name);
   if (!scomSettingsCols.includes('management_server')) {
     db.exec('ALTER TABLE scom_settings ADD COLUMN management_server TEXT');
+  }
+  if (!scomSettingsCols.includes('winrm_username')) {
+    db.exec('ALTER TABLE scom_settings ADD COLUMN winrm_username TEXT');
+  }
+  if (!scomSettingsCols.includes('winrm_password')) {
+    db.exec('ALTER TABLE scom_settings ADD COLUMN winrm_password TEXT');
+  }
+}
+
+const alertsTableExists = !!db.prepare("SELECT name FROM sqlite_master WHERE type='table' AND name='alerts'").get();
+if (alertsTableExists) {
+  const alertsCols = db.prepare('PRAGMA table_info(alerts)').all().map((c) => c.name);
+  if (!alertsCols.includes('priority')) {
+    db.exec('ALTER TABLE alerts ADD COLUMN priority TEXT');
+  }
+  if (!alertsCols.includes('repeat_count')) {
+    db.exec('ALTER TABLE alerts ADD COLUMN repeat_count INTEGER');
+  }
+  if (!alertsCols.includes('in_maintenance_mode')) {
+    db.exec('ALTER TABLE alerts ADD COLUMN in_maintenance_mode INTEGER NOT NULL DEFAULT 0');
   }
 }
 

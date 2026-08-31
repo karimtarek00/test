@@ -8,7 +8,8 @@ const router = express.Router();
 
 function sanitize(settings) {
   if (!settings) return null;
-  return { ...settings, autoFetchEnabled: !!settings.enabled };
+  const { winrm_password, ...rest } = settings;
+  return { ...rest, hasPassword: !!winrm_password, autoFetchEnabled: !!settings.enabled };
 }
 
 router.get('/settings', asyncHandler(async (req, res) => {
@@ -16,23 +17,33 @@ router.get('/settings', asyncHandler(async (req, res) => {
 }));
 
 router.put('/settings', asyncHandler(async (req, res) => {
-  const { managementServer, fullSyncIntervalMinutes } = req.body;
+  const { managementServer, fullSyncIntervalMinutes, winrmUsername, winrmPassword } = req.body;
   const saved = await scomSync.saveSettings({
     management_server: managementServer?.trim(),
     full_sync_interval_minutes: fullSyncIntervalMinutes,
+    winrm_username: winrmUsername?.trim(),
+    // A blank password here means "keep the existing one" -- see
+    // saveSettings, which only overwrites on a non-empty value. The form
+    // never receives the real password back, so it can't send it unchanged.
+    winrm_password: winrmPassword || undefined,
   });
   log.info({ userId: req.user?.id }, 'scom settings updated');
   res.json({ settings: sanitize(saved) });
 }));
 
-// Validates PowerShell/Get-SCOMAlert access using the currently-entered
-// (not-yet-saved) management server value. Deliberately always responds
-// 200: {ok:false, error} is a normal outcome of a connectivity/access test,
-// not a server error.
+// Validates WinRM/Get-SCOMAlert access using the currently-entered
+// (not-yet-saved) values, falling back to the stored ones for anything left
+// blank (most commonly the password, which the form never redisplays).
+// Deliberately always responds 200: {ok:false, error} is a normal outcome
+// of a connectivity/access test, not a server error.
 router.post('/test', asyncHandler(async (req, res) => {
   const current = await scomSync.getSettings();
-  const { managementServer } = req.body || {};
-  const candidate = { management_server: managementServer !== undefined ? managementServer : current?.management_server };
+  const { managementServer, winrmUsername, winrmPassword } = req.body || {};
+  const candidate = {
+    management_server: managementServer !== undefined ? managementServer : current?.management_server,
+    winrm_username: winrmUsername !== undefined ? winrmUsername : current?.winrm_username,
+    winrm_password: winrmPassword || current?.winrm_password,
+  };
   try {
     await scomSync.testConnection(candidate);
     res.json({ ok: true });

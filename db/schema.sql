@@ -46,6 +46,14 @@ CREATE TABLE IF NOT EXISTS alerts (
   resolution_state         INTEGER NOT NULL DEFAULT 0,
   resolution_state_label   TEXT NOT NULL DEFAULT 'New',
   source                  TEXT,
+  -- Confirmed against a real Get-SCOMAlert dump (not guessed): SCOM's
+  -- Priority is a separate field from Severity ("Normal"/"High"/etc.).
+  priority                TEXT,
+  -- How many times this exact alert has re-fired -- SCOM's own counter,
+  -- feeds the health score's repetition factor directly instead of
+  -- estimating it from re-sync frequency.
+  repeat_count             INTEGER,
+  in_maintenance_mode      INTEGER NOT NULL DEFAULT 0,
   created_at               TEXT NOT NULL,
   last_modified            TEXT,
   resolved_at               TEXT,
@@ -74,14 +82,20 @@ CREATE TABLE IF NOT EXISTS import_jobs (
 -- sync status. Equivalent of the reference app's nnmi_settings.
 CREATE TABLE IF NOT EXISTS scom_settings (
   id                          INTEGER PRIMARY KEY CHECK (id = 1),
-  -- Data is pulled via the SCOM PowerShell module (Get-SCOMAlert), not a
-  -- direct SQL connection -- see scomSync.js for why. No credentials are
-  -- stored here: the Node process's own Windows identity (or whatever
-  -- New-SCOMManagementGroupConnection resolves) is what authenticates.
-  -- management_server is only needed if this app ISN'T already running on
-  -- (or already connected to) a SCOM Management Server -- leave blank to
-  -- use whatever connection context is already active.
+  -- Data is pulled via PowerShell Remoting (Invoke-Command) into the actual
+  -- SCOM Management Server, which runs Get-SCOMAlert locally there via the
+  -- OperationsManager module that's already installed on it -- nothing is
+  -- installed on this app's own host. See scomSync.js for why this replaced
+  -- both the earlier direct-SQL and local-PowerShell-module approaches.
+  -- management_server is the management server's hostname/IP (confirmed
+  -- reachable on WinRM port 5985).
   management_server           TEXT,
+  -- Windows account with (1) Remote Management Users membership on
+  -- management_server and (2) a SCOM Read-Only Operator role -- both grants
+  -- must be on this SAME account, since Invoke-Command authenticates as one
+  -- identity only.
+  winrm_username              TEXT,
+  winrm_password              TEXT,
   enabled                     INTEGER NOT NULL DEFAULT 0,  -- auto-fetch (every 5 min, incremental) on/off
   last_sync_at                TEXT,
   last_sync_status            TEXT,

@@ -3,7 +3,7 @@ import { api } from '../api/client.js';
 import TopBar from '../components/TopBar.jsx';
 import AiSettingsPanel from '../components/AiSettingsPanel.jsx';
 
-const EMPTY_FORM = { managementServer: '', fullSyncIntervalMinutes: 30 };
+const EMPTY_FORM = { managementServer: '', winrmUsername: '', winrmPassword: '', fullSyncIntervalMinutes: 30 };
 
 export default function ConfigurationPage() {
   const [form, setForm] = useState(null);
@@ -21,6 +21,8 @@ export default function ConfigurationPage() {
       setSettingsRaw(s);
       setForm({
         managementServer: s.management_server || '',
+        winrmUsername: s.winrm_username || '',
+        winrmPassword: '',
         fullSyncIntervalMinutes: s.full_sync_interval_minutes ?? 30,
       });
     });
@@ -84,13 +86,21 @@ export default function ConfigurationPage() {
             <span className={`badge ${connected ? 'healthy' : 'warning'}`}><span className="dot" />{connected ? 'Connected' : 'Not Connected'}</span>
           </div>
           <p className="text-dim" style={{ marginTop: 0, fontSize: 13 }}>
-            Pulls alerts via the SCOM PowerShell module (<code>Get-SCOMAlert</code>) — no credentials stored here; this app's own Windows identity authenticates. Leave Management Server blank if this app runs directly on (or is already connected to) a SCOM Management Server; otherwise enter the management server's hostname to connect remotely (requires the SCOM Operations Console installed on this app's host).
+            Pulls alerts via PowerShell Remoting (<code>Invoke-Command</code>) into the SCOM Management Server, which runs <code>Get-SCOMAlert</code> there — nothing is installed on this app's own host. The account below must have both Remote Management Users membership on the management server and a Read-Only Operator role in SCOM.
           </p>
           <form onSubmit={submit}>
             <div className="modal-grid">
               <div className="field">
-                <label>Management Server (optional)</label>
-                <input className="input" value={form.managementServer} onChange={set('managementServer')} placeholder="scom-mgmt01.corp.local" />
+                <label>Management Server</label>
+                <input className="input" value={form.managementServer} onChange={set('managementServer')} placeholder="10.142.70.128 or scom-mgmt01.corp.local" />
+              </div>
+              <div className="field">
+                <label>Username</label>
+                <input className="input" value={form.winrmUsername} onChange={set('winrmUsername')} placeholder="DOMAIN\svc-scom-sync" autoComplete="off" />
+              </div>
+              <div className="field">
+                <label>Password{settingsRaw?.hasPassword ? ' (leave blank to keep current)' : ''}</label>
+                <input className="input" type="password" value={form.winrmPassword} onChange={set('winrmPassword')} autoComplete="new-password" />
               </div>
               <div className="field">
                 <label>Full Sync Interval (minutes)</label>

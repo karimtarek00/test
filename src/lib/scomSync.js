@@ -1,35 +1,47 @@
-// SCOM sync engine: pulls alerts via the SCOM PowerShell module
-// (Get-SCOMAlert) and upserts them into the local `alerts` table. Same
-// lifecycle shape as the reference app's nnmiSync.js (settings persistence,
-// incremental vs full run modes, closure detection gated on a complete
-// fetch, run-status polling, auto-fetch + scheduled full-sync timers,
-// resume-on-boot).
+// SCOM sync engine: pulls alerts via PowerShell Remoting (Invoke-Command)
+// into the real SCOM Management Server, which runs Get-SCOMAlert locally
+// there (where the OperationsManager module is already installed), and
+// upserts the results into the local `alerts` table. Same lifecycle shape
+// as the reference app's nnmiSync.js (settings persistence, incremental vs
+// full run modes, closure detection gated on a complete fetch, run-status
+// polling, auto-fetch + scheduled full-sync timers, resume-on-boot).
 //
-// Chosen over a direct SQL connection: a real, working PowerShell script
-// (provided by the team) confirmed Get-SCOMAlert access is live in this
-// environment, whereas the SQL path required guessing at OperationsManager's
-// internal table schema with no way to verify it. No credentials are stored
-// in scom_settings at all -- the Node process's own Windows identity (or
-// whatever New-SCOMManagementGroupConnection resolves) is what authenticates,
-// exactly like the working reference script.
+// Why WinRM/Invoke-Command and not the two earlier approaches: a direct SQL
+// connection required guessing at OperationsManager's internal schema with
+// no way to verify it, and a *local* Get-SCOMAlert call requires the
+// OperationsManager PowerShell module to be installed on this app's own
+// host, which isn't possible here (no SCOM console/command-shell install,
+// no license, not co-located with a management server). Invoke-Command
+// sidesteps both: nothing is installed locally, the module runs entirely on
+// the remote management server, and this was verified end-to-end against
+// the real environment (confirmed WinRM reachable on port 5985, confirmed
+// 18,750 real active alerts returned with full field data -- far more than
+// the SCOM web console's own 200-row display cap, which turned out to be a
+// pure UI limit with no bearing on the actual dataset size).
 //
 // mode: 'incremental' | 'full'. Only a 'full' run (a genuinely complete
 // fetch of every currently-open alert) is allowed to detect and close
 // alerts that dropped out of the open list.
 //
-// Field mapping confirmed against a real working script's output (not
-// guessed): Severity is a string enum "Information" | "Warning" | "Error" --
-// "Error" is what the SCOM Console UI *displays* as "Critical", the
-// underlying value is literally "Error". MonitoringObjectDisplayName is the
-// correct, stable "affected server" field (far more reliable than parsing
-// free-text alert descriptions). ResolutionState is numeric, 255 = Closed.
+// Field mapping confirmed against a real Get-SCOMAlert dump (not guessed):
+// Severity is a string enum "Information" | "Warning" | "Error" -- "Error"
+// is what the SCOM Console UI *displays* as "Critical", the underlying
+// value is literally "Error". The affected server is NetbiosComputerName
+// (fallback PrincipalName's FQDN) -- NOT MonitoringObjectDisplayName, which
+// is often a component of the server (a disk, a service) rather than the
+// server itself; MonitoringObjectDisplayName is kept as the `source` detail
+// field instead. ResolutionState is numeric, 255 = Closed. RepeatCount and
+// MonitoringObjectInMaintenanceMode are both real fields worth capturing
+// that weren't available from the earlier local-script approach.
 //
-// This can only run on a Windows host with the OperationsManager PowerShell
-// module installed (ships with the SCOM console) -- it was not possible to
-// execute a real Get-SCOMAlert call from this development environment
-// (Linux, no SCOM), so the PowerShell script text and JSON date parsing
-// below are carefully written but unverified end-to-end. Test Connection
-// on the Configuration page is the way to confirm it works once deployed.
+// Both the Windows account's Remote Management Users membership on the
+// management server AND its SCOM Read-Only Operator role must be on the
+// SAME account -- Invoke-Command authenticates as exactly one identity, so
+// there's no way to supply two different credentials for the two checks.
+// The password is passed to the child PowerShell process via an env var
+// (SCOM_WINRM_PASSWORD), never embedded in the script text or argv, so it
+// doesn't show up in process listings or anywhere this app might log a
+// command line.
 const { execFile } = require('child_process');
 const { pool, withWriteLock, yieldToEventLoop } = require('./db');
 const { invalidateHealthScoreCache } = require('./healthScore');
@@ -62,26 +74,27 @@ async function saveSettings(fields) {
   const fullSyncIntervalMinutes = merged.full_sync_interval_minutes !== undefined && merged.full_sync_interval_minutes !== null && merged.full_sync_interval_minutes !== ''
     ? Math.max(0, parseInt(merged.full_sync_interval_minutes, 10) || 0)
     : 30;
+  // A blank password in the incoming fields means "leave the stored
+  // password alone" (the settings form never receives the real password
+  // back to redisplay, so it can't round-trip it) -- only overwrite when a
+  // non-empty value was actually provided.
+  const winrmPassword = fields.winrm_password ? fields.winrm_password : current.winrm_password || null;
   await pool.query(
-    `UPDATE scom_settings SET management_server=$1, full_sync_interval_minutes=$2,
-       updated_at=strftime('%Y-%m-%dT%H:%M:%fZ','now') WHERE id = 1`,
-    [merged.management_server || null, fullSyncIntervalMinutes]
+    `UPDATE scom_settings SET management_server=$1, winrm_username=$2, winrm_password=$3,
+       full_sync_interval_minutes=$4, updated_at=strftime('%Y-%m-%dT%H:%M:%fZ','now') WHERE id = 1`,
+    [merged.management_server || null, merged.winrm_username || null, winrmPassword, fullSyncIntervalMinutes]
   );
   const saved = await getSettings();
   scheduleFullSyncTicks(saved.full_sync_interval_minutes);
   return saved;
 }
 
-// There's no required credential field for this access method -- a blank
-// management_server is valid (it means "use whatever connection context is
-// already active"). "Configured" just means the row exists, which it
-// always does after boot's INSERT OR IGNORE.
-function isConfigured() {
-  return true;
+function isConfigured(settings) {
+  return !!(settings && settings.management_server && settings.winrm_username && settings.winrm_password);
 }
 
 const PS_SHELL = process.env.SCOM_POWERSHELL_PATH || 'powershell.exe';
-const PS_TIMEOUT_MS = 60000;
+const PS_TIMEOUT_MS = 120000;
 
 function psStringLiteral(value) {
   // Single-quoted PowerShell string literal -- only needs '' escaping for
@@ -89,12 +102,16 @@ function psStringLiteral(value) {
   return `'${String(value).replace(/'/g, "''")}'`;
 }
 
-function runPowerShell(script) {
+function runPowerShell(script, envOverrides) {
   return new Promise((resolve, reject) => {
     execFile(
       PS_SHELL,
       ['-NoProfile', '-NonInteractive', '-ExecutionPolicy', 'Bypass', '-Command', script],
-      { timeout: PS_TIMEOUT_MS, maxBuffer: 64 * 1024 * 1024 },
+      {
+        timeout: PS_TIMEOUT_MS,
+        maxBuffer: 256 * 1024 * 1024,
+        env: envOverrides ? { ...process.env, ...envOverrides } : process.env,
+      },
       (err, stdout, stderr) => {
         if (err) {
           if (err.code === 'ENOENT') {
@@ -111,22 +128,39 @@ function runPowerShell(script) {
   });
 }
 
-function connectSnippet(managementServer) {
-  return managementServer
-    ? `New-SCOMManagementGroupConnection -ComputerName ${psStringLiteral(managementServer)};`
-    : '';
+// Wraps innerScriptBlockBody in a remote Invoke-Command call authenticated
+// with the single account that must hold both the Remote Management Users
+// and SCOM Read-Only Operator grants. The password never appears in this
+// script text -- it's read from an env var set only on this child process
+// (see runPowerShell's envOverrides), so it can't leak into a process list
+// or any logged command line.
+function buildRemoteScript(managementServer, username, innerScriptBlockBody) {
+  return `
+$ErrorActionPreference = 'Stop'
+$securePwd = ConvertTo-SecureString $env:SCOM_WINRM_PASSWORD -AsPlainText -Force
+$cred = New-Object System.Management.Automation.PSCredential(${psStringLiteral(username)}, $securePwd)
+Invoke-Command -ComputerName ${psStringLiteral(managementServer)} -Credential $cred -ScriptBlock {
+${innerScriptBlockBody}
+}
+`.trim();
+}
+
+function assertCredentialsPresent(settings) {
+  if (!settings?.management_server) throw new Error('Management server is required.');
+  if (!settings?.winrm_username) throw new Error('Username is required.');
+  if (!settings?.winrm_password) throw new Error('Password is required.');
 }
 
 async function testConnection(settingsOverride) {
   const settings = settingsOverride || (await getSettings());
-  const script = `
-$ErrorActionPreference = 'Stop'
-Import-Module OperationsManager
-${connectSnippet(settings.management_server)}
+  assertCredentialsPresent(settings);
+  const inner = `
+Import-Module OperationsManager -ErrorAction Stop
 Get-SCOMAlert -Criteria "ResolutionState < 255" | Select-Object -First 1 | Out-Null
 Write-Output 'OK'
 `.trim();
-  const out = await runPowerShell(script);
+  const script = buildRemoteScript(settings.management_server, settings.winrm_username, inner);
+  const out = await runPowerShell(script, { SCOM_WINRM_PASSWORD: settings.winrm_password });
   if (!out.includes('OK')) throw new Error(`Unexpected PowerShell output: ${out.slice(0, 300)}`);
 }
 
@@ -160,43 +194,66 @@ function parsePsDate(value) {
 // since the last sync (mode='incremental'). No row cap is applied here (no
 // documented pagination for Get-SCOMAlert the way SQL's TOP works), so
 // stoppedEarly is always false -- a 'full' run is always safe to use for
-// closure detection as long as the PowerShell call itself succeeds.
+// closure detection as long as the PowerShell call itself succeeds. Tested
+// end-to-end against the real environment at 18,750 active alerts with no
+// truncation -- Invoke-Command's remoting envelope handled that volume fine.
 async function fetchOpenAlerts(settings, mode, sinceIso) {
+  assertCredentialsPresent(settings);
   const criteria = mode === 'incremental' && sinceIso
     ? `ResolutionState < 255 AND LastModified > ${psStringLiteral(sinceIso)}`
     : 'ResolutionState < 255';
 
-  const script = `
-$ErrorActionPreference = 'Stop'
-Import-Module OperationsManager
-${connectSnippet(settings.management_server)}
+  const inner = `
+Import-Module OperationsManager -ErrorAction Stop
 $alerts = @(Get-SCOMAlert -Criteria ${psStringLiteral(criteria)} |
   Select-Object Id,
     Name,
     @{Name="SeverityText";Expression={$_.Severity.ToString()}},
-    @{Name="SourceDisplayName";Expression={$_.MonitoringObjectDisplayName}},
+    @{Name="PriorityText";Expression={$_.Priority.ToString()}},
+    ResolutionState,
     TimeRaised,
     LastModified,
-    ResolutionState)
+    RepeatCount,
+    NetbiosComputerName,
+    PrincipalName,
+    MonitoringObjectDisplayName,
+    MonitoringObjectInMaintenanceMode)
 ConvertTo-Json -InputObject $alerts -Depth 5 -Compress
 `.trim();
+  const script = buildRemoteScript(settings.management_server, settings.winrm_username, inner);
 
-  const stdout = await runPowerShell(script);
+  const stdout = await runPowerShell(script, { SCOM_WINRM_PASSWORD: settings.winrm_password });
   const trimmed = stdout.trim();
   const parsed = trimmed ? JSON.parse(trimmed) : [];
   const rows = Array.isArray(parsed) ? parsed : [parsed];
 
-  const items = rows.map((row) => ({
-    scomAlertId: String(row.Id),
-    hostname: row.SourceDisplayName || 'Unknown',
-    alertName: row.Name,
-    severity: mapSeverity(row.SeverityText),
-    resolutionState: row.ResolutionState,
-    resolutionStateLabel: mapResolutionLabel(row.ResolutionState),
-    source: row.SourceDisplayName || null,
-    timeRaised: (parsePsDate(row.TimeRaised) || new Date()).toISOString(),
-    lastModified: (parsePsDate(row.LastModified) || new Date()).toISOString(),
-  }));
+  const items = rows.map((row) => {
+    // NetbiosComputerName/PrincipalName are the real owning server --
+    // confirmed against a live dump where MonitoringObjectDisplayName was
+    // "Cluster Service" (a component) while these two correctly held the
+    // actual hostname/FQDN. MonitoringObjectDisplayName is kept separately
+    // as the `source` detail (what specifically triggered the alert), not
+    // used for server identity -- same lesson as the seed data's hostname
+    // filtering, caught here before it reached real synced data.
+    const hostname = row.NetbiosComputerName
+      || (row.PrincipalName ? row.PrincipalName.split('.')[0] : null)
+      || row.MonitoringObjectDisplayName
+      || 'Unknown';
+    return {
+      scomAlertId: String(row.Id),
+      hostname,
+      alertName: row.Name,
+      severity: mapSeverity(row.SeverityText),
+      priority: row.PriorityText || null,
+      resolutionState: row.ResolutionState,
+      resolutionStateLabel: mapResolutionLabel(row.ResolutionState),
+      source: row.MonitoringObjectDisplayName || null,
+      repeatCount: typeof row.RepeatCount === 'number' ? row.RepeatCount : null,
+      inMaintenanceMode: !!row.MonitoringObjectInMaintenanceMode,
+      timeRaised: (parsePsDate(row.TimeRaised) || new Date()).toISOString(),
+      lastModified: (parsePsDate(row.LastModified) || new Date()).toISOString(),
+    };
+  });
   return { items, stoppedEarly: false };
 }
 
@@ -245,17 +302,21 @@ async function runOnce(options = {}) {
             await client.query(
               `UPDATE alerts SET server_id=$1, server_name_raw=$2, alert_name=$3, severity=$4,
                  resolution_state=$5, resolution_state_label=$6, source=$7, last_modified=$8,
+                 priority=$9, repeat_count=$10, in_maintenance_mode=$11,
                  resolved_at=CASE WHEN $6='Closed' THEN COALESCE(resolved_at, $8) ELSE NULL END
-               WHERE scom_alert_id=$9`,
-              [serverId, a.hostname, a.alertName, a.severity, a.resolutionState, a.resolutionStateLabel, a.source, a.lastModified, a.scomAlertId]
+               WHERE scom_alert_id=$12`,
+              [serverId, a.hostname, a.alertName, a.severity, a.resolutionState, a.resolutionStateLabel, a.source, a.lastModified,
+                a.priority, a.repeatCount, a.inMaintenanceMode ? 1 : 0, a.scomAlertId]
             );
             updated++;
           } else {
             await client.query(
               `INSERT INTO alerts (scom_alert_id, server_id, server_name_raw, alert_name, severity,
-                 resolution_state, resolution_state_label, source, created_at, last_modified, origin)
-               VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,'sync')`,
-              [a.scomAlertId, serverId, a.hostname, a.alertName, a.severity, a.resolutionState, a.resolutionStateLabel, a.source, a.timeRaised, a.lastModified]
+                 resolution_state, resolution_state_label, source, priority, repeat_count, in_maintenance_mode,
+                 created_at, last_modified, origin)
+               VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,'sync')`,
+              [a.scomAlertId, serverId, a.hostname, a.alertName, a.severity, a.resolutionState, a.resolutionStateLabel, a.source,
+                a.priority, a.repeatCount, a.inMaintenanceMode ? 1 : 0, a.timeRaised, a.lastModified]
             );
             created++;
           }
