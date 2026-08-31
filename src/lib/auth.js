@@ -11,7 +11,12 @@ const { AppError } = require('./errors');
 const log = logger.forModule('auth');
 
 const SESSION_DAYS = 7;
-const COOKIE_NAME = 'sid';
+// A generic name like "sid" collides with other internal apps that use the
+// same default -- cookies are scoped by domain+path only, NOT by port, so
+// two different apps on the same hostname (even on different ports) sharing
+// a cookie name silently overwrite each other's session, signing one out
+// whenever the other logs in. Namespaced to this specific app to avoid it.
+const COOKIE_NAME = 'server_watch_sid';
 
 function hashPassword(password) {
   const salt = crypto.randomBytes(16).toString('hex');

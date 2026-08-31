@@ -61,12 +61,18 @@ function extractReply(json) {
 
 async function chatComplete(settings, messages, { maxTokens = 800, temperature = 0.3 } = {}) {
   if (!settings?.base_url) throw new Error('AI base URL is not set.');
-  if (!settings?.api_key) throw new Error('AI API key is not set.');
+  // api_key is deliberately NOT required -- an internal/self-hosted gateway
+  // (confirmed by a real working reference script, which explicitly leaves
+  // its bearer token blank) is just as likely to need no authentication at
+  // all as it is to need a key. Only send the auth header when a key is
+  // actually configured.
 
   const url = new URL(settings.base_url);
   const authHeader = settings.auth_header || 'Authorization';
   const authScheme = settings.auth_scheme != null ? settings.auth_scheme : 'Bearer';
-  const headerValue = authScheme ? `${authScheme} ${settings.api_key}` : settings.api_key;
+  const headerValue = settings.api_key
+    ? (authScheme ? `${authScheme} ${settings.api_key}` : settings.api_key)
+    : null;
 
   const body = JSON.stringify({
     messages,
@@ -80,7 +86,7 @@ async function chatComplete(settings, messages, { maxTokens = 800, temperature =
     headers: {
       'Content-Type': 'application/json',
       'Content-Length': Buffer.byteLength(body),
-      [authHeader]: headerValue,
+      ...(headerValue ? { [authHeader]: headerValue } : {}),
     },
     body,
   }, agentFor(settings));
