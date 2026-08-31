@@ -27,7 +27,13 @@ export default function TopBar({ title, children }) {
     return () => document.removeEventListener('mousedown', onClickOutside);
   }, []);
 
-  const connected = scomStatus?.sql_host && scomStatus?.last_sync_status === 'ok';
+  // sql_host was the field name from the earlier direct-SQL sync approach --
+  // stale, no longer present since the switch to WinRM (management_server).
+  // Left unnoticed until now because dev/test data never had a real
+  // successful sync to reveal it: this always evaluated false, so the badge
+  // was permanently stuck on "Disconnected" even right after a real
+  // Run Sync Now succeeded.
+  const connected = scomStatus?.last_sync_status === 'ok';
 
   return (
     <div className="topbar">

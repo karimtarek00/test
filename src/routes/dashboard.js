@@ -16,7 +16,10 @@ router.get('/summary', asyncHandler(async (req, res) => {
     pool.query(`SELECT COUNT(*)::int AS c FROM alerts WHERE resolution_state_label != 'Closed' AND severity='Critical'`),
     pool.query(`SELECT COUNT(*)::int AS c FROM alerts WHERE resolution_state_label != 'Closed' AND severity='Warning'`),
     pool.query(`SELECT COUNT(*)::int AS c FROM servers WHERE active = 1`),
-    pool.query(`SELECT COUNT(*)::int AS c FROM alerts WHERE resolution_state_label = 'Closed' AND created_at >= datetime('now','-7 days')`),
+    // resolved_at (when it was actually closed), not created_at (when it
+    // was first raised) -- these diverge for any alert open more than a
+    // few minutes, which is nearly all of them.
+    pool.query(`SELECT COUNT(*)::int AS c FROM alerts WHERE resolution_state_label = 'Closed' AND resolved_at >= datetime('now','-7 days')`),
   ]);
 
   const health = await computeHealthScores();

@@ -125,10 +125,16 @@ router.post('/alerts', upload.single('file'), asyncHandler(async (req, res, next
         existingKeys.add(key);
 
         const serverId = serverIdByKey.get(normalizeServerName(a.serverNameRaw)) || null;
+        // Console exports carry only one timestamp per alert -- no separate
+        // "time resolved" column -- so a Closed row's created_at is the best
+        // available approximation for resolved_at. Leaving it NULL would
+        // permanently break any "resolved in the last N days" metric for
+        // imported data, since that column would never be populated at all.
+        const resolvedAtIso = a.resolutionStateLabel === 'Closed' ? createdAtIso : null;
         await client.query(
-          `INSERT INTO alerts (server_id, server_name_raw, alert_name, severity, resolution_state, resolution_state_label, source, created_at, origin)
-           VALUES ($1,$2,$3,$4,$5,$6,$7,$8,'import')`,
-          [serverId, a.serverNameRaw, a.alertName, a.severity, a.resolutionState, a.resolutionStateLabel, a.source, createdAtIso]
+          `INSERT INTO alerts (server_id, server_name_raw, alert_name, severity, resolution_state, resolution_state_label, source, created_at, resolved_at, origin)
+           VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,'import')`,
+          [serverId, a.serverNameRaw, a.alertName, a.severity, a.resolutionState, a.resolutionStateLabel, a.source, createdAtIso, resolvedAtIso]
         );
         imported++;
         if (++processed % 200 === 0) await yieldToEventLoop();

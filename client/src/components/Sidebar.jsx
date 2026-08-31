@@ -3,7 +3,7 @@ import { NavLink } from 'react-router-dom';
 import { useAuth } from '../context/AuthContext.jsx';
 import {
   IconDashboard, IconBell, IconStar, IconServer, IconUpload, IconSettings,
-  IconUsers, IconChevronLeft, IconChevronRight, IconShield,
+  IconUsers, IconReport, IconChevronLeft, IconChevronRight, IconShield,
 } from './icons.jsx';
 
 const SECTIONS = [
@@ -24,7 +24,10 @@ const SECTIONS = [
   },
   {
     label: 'Data Management',
-    items: [{ to: '/import', label: 'Import Data', icon: IconUpload, adminOnly: true }],
+    items: [
+      { to: '/import', label: 'Import Data', icon: IconUpload, adminOnly: true },
+      { to: '/reports', label: 'Reports', icon: IconReport },
+    ],
   },
   {
     label: 'Administration',

@@ -56,10 +56,14 @@ async function seedFile(client, filePath) {
     }
 
     const createdAtIso = a.createdAt instanceof Date ? a.createdAt.toISOString() : a.createdAt;
+    // Console exports carry only one timestamp per alert -- no separate
+    // "time resolved" column -- so a Closed row's created_at is the best
+    // available approximation for resolved_at. Same fix as importRoutes.js.
+    const resolvedAtIso = a.resolutionStateLabel === 'Closed' ? createdAtIso : null;
     await client.query(
-      `INSERT INTO alerts (server_id, server_name_raw, alert_name, severity, resolution_state, resolution_state_label, source, created_at, origin)
-       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,'import')`,
-      [serverId, a.serverNameRaw, a.alertName, a.severity, a.resolutionState, a.resolutionStateLabel, a.source, createdAtIso]
+      `INSERT INTO alerts (server_id, server_name_raw, alert_name, severity, resolution_state, resolution_state_label, source, created_at, resolved_at, origin)
+       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,'import')`,
+      [serverId, a.serverNameRaw, a.alertName, a.severity, a.resolutionState, a.resolutionStateLabel, a.source, createdAtIso, resolvedAtIso]
     );
     inserted++;
   }
