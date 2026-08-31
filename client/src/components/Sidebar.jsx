@@ -3,13 +3,16 @@ import { NavLink } from 'react-router-dom';
 import { useAuth } from '../context/AuthContext.jsx';
 import {
   IconDashboard, IconBell, IconStar, IconServer, IconUpload, IconSettings,
-  IconUsers, IconReport, IconChevronLeft, IconChevronRight, IconShield,
+  IconUsers, IconReport, IconPulse, IconChevronLeft, IconChevronRight, IconShield,
 } from './icons.jsx';
 
 const SECTIONS = [
   {
     label: 'Overview',
-    items: [{ to: '/', label: 'Dashboard', icon: IconDashboard, end: true }],
+    items: [
+      { to: '/', label: 'Dashboard', icon: IconDashboard, end: true },
+      { to: '/analysis', label: 'Live Data & Analysis', icon: IconPulse },
+    ],
   },
   {
     label: 'Monitoring',

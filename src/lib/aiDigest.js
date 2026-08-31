@@ -38,6 +38,22 @@ async function buildDigest() {
     ORDER BY created_at DESC LIMIT 5
   `);
 
+  // Same breakdowns the Live Data & Analysis page shows, at top-5/top-hour
+  // granularity here to keep this digest compact (that page has the full
+  // filterable detail) -- lets the chat actually answer "what's our most
+  // common alarm type" or "when do most alerts happen" instead of only
+  // being able to talk about per-server counts.
+  const { rows: topAlarmTypes } = await pool.query(`
+    SELECT alert_name, COUNT(*)::int AS c FROM alerts
+    WHERE resolution_state_label != 'Closed'
+    GROUP BY alert_name ORDER BY c DESC LIMIT 5
+  `);
+  const { rows: peakHourRows } = await pool.query(`
+    SELECT CAST(strftime('%H', created_at) AS INTEGER) AS hour, COUNT(*)::int AS c
+    FROM alerts GROUP BY hour ORDER BY c DESC LIMIT 1
+  `);
+  const allTimeTotal = (await pool.query(`SELECT COUNT(*)::int AS c FROM alerts`)).rows[0].c;
+
   const health = await computeHealthScores();
   const worst = [...health].filter((h) => h.alarmCount > 0).sort((a, b) => a.healthScore - b.healthScore).slice(0, 5);
 
@@ -66,6 +82,15 @@ async function buildDigest() {
       ? `Lowest fleet health scores (0-100, lower = worse): ${worst.map((h) => `${h.hostname}=${h.healthScore}`).join(', ')}.`
       : 'No servers currently have alert history to score.'
   );
+  lines.push(`All-time alert count (open + closed, all history): ${allTimeTotal}.`);
+  lines.push(
+    topAlarmTypes.length
+      ? `Top open alarm types by volume: ${topAlarmTypes.map((r) => `"${r.alert_name}" (${r.c})`).join(', ')}. The Live Data & Analysis page has the full ranked list and lets it be filtered by server/type/severity/date.`
+      : 'No open alarm-type breakdown available yet.'
+  );
+  if (peakHourRows.length) {
+    lines.push(`Alerts cluster most around ${String(peakHourRows[0].hour).padStart(2, '0')}:00 (all-time, local time) -- ${peakHourRows[0].c} alerts historically raised in that hour.`);
+  }
 
   return lines.join('\n');
 }

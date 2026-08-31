@@ -4,6 +4,7 @@ import { ProtectedLayout, AdminRoute } from './components/ProtectedRoute.jsx';
 import LoginPage from './pages/LoginPage.jsx';
 import DashboardPage from './pages/DashboardPage.jsx';
 import AlarmsPage from './pages/AlarmsPage.jsx';
+import AnalysisPage from './pages/AnalysisPage.jsx';
 import InventoryPage from './pages/InventoryPage.jsx';
 import CriticalDashboardPage from './pages/CriticalDashboardPage.jsx';
 import ReportsPage from './pages/ReportsPage.jsx';
@@ -19,6 +20,7 @@ export default function App() {
           <Route path="/login" element={<LoginPage />} />
           <Route element={<ProtectedLayout />}>
             <Route path="/" element={<DashboardPage />} />
+            <Route path="/analysis" element={<AnalysisPage />} />
             <Route path="/alarms" element={<AlarmsPage />} />
             <Route path="/inventory" element={<InventoryPage />} />
             <Route path="/critical" element={<CriticalDashboardPage />} />

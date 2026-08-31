@@ -1,25 +1,20 @@
 const express = require('express');
-const { pool, endOfDay } = require('../lib/db');
+const { pool } = require('../lib/db');
+const { buildAlertFilters } = require('../lib/alertFilters');
 const { asyncHandler } = require('../lib/errors');
 
 const router = express.Router();
 
-// GET /api/alerts?severity=&resolution=open|closed&serverId=&q=&from=&to=&page=&pageSize=
+// GET /api/alerts?severity=&resolution=open|closed&serverId=&server=&alertName=&q=&from=&to=&page=&pageSize=
 router.get('/', asyncHandler(async (req, res) => {
-  const { severity = '', resolution = '', serverId = '', q = '', from = '', to = '', page = '1', pageSize = '50' } = req.query;
-  const where = [];
-  const params = [];
+  const { page = '1', pageSize = '50' } = req.query;
+  const { params, whereSql } = buildAlertFilters(req.query);
 
-  if (severity) { params.push(severity); where.push(`a.severity = $${params.length}`); }
-  if (resolution === 'open') where.push(`a.resolution_state_label != 'Closed'`);
-  else if (resolution === 'closed') where.push(`a.resolution_state_label = 'Closed'`);
-  if (serverId) { params.push(serverId); where.push(`a.server_id = $${params.length}`); }
-  if (q) { params.push(`%${q}%`, `%${q}%`); where.push(`(a.alert_name LIKE $${params.length - 1} OR a.server_name_raw LIKE $${params.length})`); }
-  if (from) { params.push(from); where.push(`a.created_at >= $${params.length}`); }
-  if (to) { params.push(endOfDay(to)); where.push(`a.created_at <= $${params.length}`); }
-
-  const whereSql = where.length ? `WHERE ${where.join(' AND ')}` : '';
-  const total = (await pool.query(`SELECT COUNT(*)::int AS c FROM alerts a ${whereSql}`, params)).rows[0].c;
+  // LEFT JOIN needed here too since the `server` filter can reference
+  // s.hostname -- the count query has to see exactly the same rows the
+  // paginated query below does, or `total` and the actual result set
+  // disagree the moment that filter is used.
+  const total = (await pool.query(`SELECT COUNT(*)::int AS c FROM alerts a LEFT JOIN servers s ON s.id = a.server_id ${whereSql}`, params)).rows[0].c;
 
   const limit = Math.min(parseInt(pageSize, 10) || 50, 200);
   const offset = (Math.max(parseInt(page, 10) || 1, 1) - 1) * limit;

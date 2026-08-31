@@ -186,6 +186,24 @@ function mapResolutionLabel(code) {
   return 'In Progress';
 }
 
+// SQL Server's own fixed, universal system database names -- not
+// org-specific, not guessed. A monitored SQL Server database's
+// MonitoringObjectDisplayName is just the database name, which is one of
+// these for every SQL Server instance that exists.
+const SQL_SYSTEM_DATABASES = new Set(['master', 'model', 'msdb', 'tempdb']);
+
+function hostnameFromDisplayName(displayName) {
+  if (!displayName) return null;
+  // A cluster resource group's display name is "<RoleName> (<Server>)" --
+  // confirmed against a real alert ("ECMDB2Role (RMP-DCDB2-ECMCS)") where
+  // NetbiosComputerName/PrincipalName were both blank for that alert's
+  // target class. The parenthetical part is the real server.
+  const clusterMatch = displayName.match(/\(([^)]+)\)\s*$/);
+  if (clusterMatch) return clusterMatch[1];
+  if (SQL_SYSTEM_DATABASES.has(displayName.trim().toLowerCase())) return null;
+  return displayName;
+}
+
 // PowerShell's ConvertTo-Json can render a DateTime as either a plain ISO
 // string (PowerShell 7/pwsh) or the legacy "/Date(ticks)/" form (Windows
 // PowerShell 5.1) depending on version -- handle both rather than assuming.
@@ -242,9 +260,22 @@ ConvertTo-Json -InputObject $alerts -Depth 5 -Compress
     // as the `source` detail (what specifically triggered the alert), not
     // used for server identity -- same lesson as the seed data's hostname
     // filtering, caught here before it reached real synced data.
+    //
+    // Both fields come back blank for some monitored classes though (SQL
+    // Server databases, cluster resource groups) -- confirmed against a
+    // real 19k-row production export, where this fell through to
+    // MonitoringObjectDisplayName and created fake "servers" named
+    // "master"/"msdb"/"model"/"DBA_Inventory" (SQL system databases) and
+    // cluster role names. hostnameFromDisplayName() handles the two
+    // confirmed cases: a cluster role's display format embeds the real
+    // server in parentheses ("ECMDB2Role (RMP-DCDB2-ECMCS)"), and SQL
+    // Server's own fixed system database names are excluded outright
+    // rather than guessed at, since a real server *could* coincidentally
+    // share a name with some other unverified string but never with these
+    // four reserved names.
     const hostname = row.NetbiosComputerName
       || (row.PrincipalName ? row.PrincipalName.split('.')[0] : null)
-      || row.MonitoringObjectDisplayName
+      || hostnameFromDisplayName(row.MonitoringObjectDisplayName)
       || 'Unknown';
     return {
       scomAlertId: String(row.Id),
