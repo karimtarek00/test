@@ -90,11 +90,20 @@ function install() {
   const nodeExe = process.execPath;
   const distIndex = path.join(APP_ROOT, 'dist', 'index.js');
 
-  let result = runNssm(['install', WINDOWS_SERVICE_NAME, nodeExe, '--max-old-space-size=4096', distIndex]);
+  // Install with ONLY the program path -- no trailing arguments here. NSSM's
+  // `install <name> <program> [args...]` joins those trailing args into one
+  // internal AppParameters string itself, and does NOT auto-quote any of
+  // them -- a path containing a space (like an app folder named "Servers
+  // Dashboard") comes out split in two, and the launched Node process then
+  // fails with "Cannot find module" on the truncated first half. Setting
+  // AppParameters explicitly afterward, as one value this code fully
+  // controls (with the path quoted itself), avoids that entirely.
+  let result = runNssm(['install', WINDOWS_SERVICE_NAME, nodeExe]);
   if (result.status !== 0) return { ok: false, error: `nssm install failed: ${result.stderr || result.stdout}` };
 
   const sets = [
     ['AppDirectory', APP_ROOT],
+    ['AppParameters', `--max-old-space-size=4096 "${distIndex}"`],
     ['AppStdout', NSSM_STDOUT_LOG],
     ['AppStderr', NSSM_STDERR_LOG],
     // A real delay -- 0 risks EADDRINUSE if the OS hasn't released the
