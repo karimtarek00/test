@@ -207,6 +207,9 @@ function hostnameFromDisplayName(displayName) {
 // PowerShell's ConvertTo-Json can render a DateTime as either a plain ISO
 // string (PowerShell 7/pwsh) or the legacy "/Date(ticks)/" form (Windows
 // PowerShell 5.1) depending on version -- handle both rather than assuming.
+// Both forms are safe here ONLY because fetchOpenAlerts explicitly converts
+// every DateTime to UTC (.ToUniversalTime()) before ConvertTo-Json ever
+// touches it -- see the comment there for why that matters.
 function parsePsDate(value) {
   if (!value) return null;
   const legacyMatch = /\/Date\((\d+)\)\//.exec(value);
@@ -247,6 +250,24 @@ async function fetchOpenAlerts(settings, mode, sinceIso) {
     ? `ResolutionState < 255 AND LastModified > ${psStringLiteral(incrementalCutoff(sinceIso))}`
     : 'ResolutionState < 255';
 
+  // TimeRaised/LastModified come back from Get-SCOMAlert as .NET DateTime
+  // values with Kind=Unspecified -- they represent this SCOM management
+  // server's own local wall-clock time, but carry no marker saying so.
+  // ConvertTo-Json then renders an Unspecified-Kind DateTime with NO
+  // timezone offset at all (PowerShell 7/pwsh) or as epoch-ms UTC ticks
+  // (Windows PowerShell 5.1, unambiguous). The pwsh case is exactly the bug
+  // reported live: a Node Date parses a timezone-less "2026-09-01T07:17:23"
+  // string as LOCAL to whatever timezone *the app server's own process*
+  // happens to run in -- not this management server's timezone -- so the
+  // exact same alert stores a different UTC instant depending purely on
+  // the app host's OS/TZ setting, shifting every displayed alert time by
+  // that offset (confirmed: reproduces a 3-hour shift between TZ=UTC and
+  // TZ=Asia/Riyadh parsing the identical raw string). Calling
+  // .ToUniversalTime() HERE, on the management server itself, resolves an
+  // Unspecified-Kind value using that server's own correct local-to-UTC
+  // offset before it ever leaves the machine that actually knows what
+  // timezone the value was in -- so the JSON string is always an
+  // unambiguous UTC instant, immune to the app server's own TZ entirely.
   const inner = `
 Import-Module OperationsManager -ErrorAction Stop
 $alerts = @(Get-SCOMAlert -Criteria ${psStringLiteral(criteria)} |
@@ -255,8 +276,8 @@ $alerts = @(Get-SCOMAlert -Criteria ${psStringLiteral(criteria)} |
     @{Name="SeverityText";Expression={$_.Severity.ToString()}},
     @{Name="PriorityText";Expression={$_.Priority.ToString()}},
     ResolutionState,
-    TimeRaised,
-    LastModified,
+    @{Name="TimeRaisedUtc";Expression={ if ($_.TimeRaised) { $_.TimeRaised.ToUniversalTime().ToString("o") } else { $null } }},
+    @{Name="LastModifiedUtc";Expression={ if ($_.LastModified) { $_.LastModified.ToUniversalTime().ToString("o") } else { $null } }},
     RepeatCount,
     NetbiosComputerName,
     PrincipalName,
@@ -307,8 +328,8 @@ ConvertTo-Json -InputObject $alerts -Depth 5 -Compress
       source: row.MonitoringObjectDisplayName || null,
       repeatCount: typeof row.RepeatCount === 'number' ? row.RepeatCount : null,
       inMaintenanceMode: !!row.MonitoringObjectInMaintenanceMode,
-      timeRaised: (parsePsDate(row.TimeRaised) || new Date()).toISOString(),
-      lastModified: (parsePsDate(row.LastModified) || new Date()).toISOString(),
+      timeRaised: (parsePsDate(row.TimeRaisedUtc) || new Date()).toISOString(),
+      lastModified: (parsePsDate(row.LastModifiedUtc) || new Date()).toISOString(),
     };
   });
   return { items, stoppedEarly: false };
