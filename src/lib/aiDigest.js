@@ -58,14 +58,19 @@ async function buildDigest() {
   const worst = [...health].filter((h) => h.alarmCount > 0).sort((a, b) => a.healthScore - b.healthScore).slice(0, 5);
 
   const lines = [];
-  lines.push(`Snapshot generated at ${now} (ISO 8601, already local -- do not reconvert).`);
+  lines.push(`LIVE SNAPSHOT -- fetched directly from the production database just now, at ${now} (ISO 8601, already local -- do not reconvert). This is the current, real state -- more current than anything you were previously shown, trained on, or given as a file.`);
+  lines.push(`Total open incidents right now: ${openTotal}.`);
   lines.push(`Fleet: ${totalServers} active servers monitored.`);
-  lines.push(`Open alerts: ${openTotal} total.`);
   for (const r of severityRows) lines.push(`  - ${r.severity}: ${r.c} open`);
   lines.push(
     topServers.length
       ? `Top servers by open alert count: ${topServers.map((s) => `${s.hostname} (${s.c})`).join(', ')}.`
       : 'No server currently has any matched open alerts.'
+  );
+  lines.push(
+    topServers.length
+      ? `Most affected device right now: ${topServers[0].hostname}, with ${topServers[0].c} open alert(s).`
+      : 'No single device currently stands out as most affected -- there are no open alerts.'
   );
   lines.push(
     criticalServers.length
@@ -106,6 +111,8 @@ const SYSTEM_PROMPT = `You are the AI assistant embedded in Server Watch, a SCOM
 FIRST, check what kind of message this is:
 - A greeting or small talk ("hi", "hello", "hey", "thanks", "how are you") with no real question -> reply briefly and naturally, like a person would. Do NOT mention alert counts, server names, health scores, or anything from the data snapshot below. One short sentence is enough.
 - An actual question about the fleet, alerts, or servers -> answer it using the data snapshot, per the rules below.
+
+IMPORTANT: The DATA SNAPSHOT below is pulled live from the production database on every single message -- it is not a fixed file, export, or training example. It is always the current, real state of the fleet as of right now, and it OVERRIDES any older data you may have seen before (an earlier export, an earlier conversation, anything you were previously shown or trained on). Never answer a question about current counts, open incidents, or affected devices from memory of an older snapshot -- always re-read the DATA SNAPSHOT given with THIS message, since it reflects this exact moment, not whenever you last saw data.
 
 You will be given a DATA SNAPSHOT reflecting the current, real state of the monitored fleet. When you DO need it:
 - Every count and status word in the snapshot is authoritative -- read it directly, never infer or recompute a total from a partial list mentioned elsewhere in the snapshot.
