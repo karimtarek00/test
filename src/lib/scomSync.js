@@ -215,17 +215,36 @@ function parsePsDate(value) {
   return isNaN(d.getTime()) ? null : d;
 }
 
+// An incremental tick's cutoff (sinceIso) is stamped by THIS app server's
+// own clock, but LastModified on each row is stamped by the remote SCOM
+// management server's clock -- a real, common gap between two machines
+// (even a few minutes of NTP drift, or just the time an Invoke-Command
+// round trip itself takes between when SCOM evaluates the criteria and
+// when this app records the new checkpoint) is enough for a genuinely
+// brand-new alert to compare as "not after" the cutoff and get silently
+// skipped forever after, on every subsequent tick -- since the checkpoint
+// only ever moves forward. Subtracting a buffer before filtering re-fetches
+// a small, harmless overlap of already-seen alerts each tick (a redundant
+// UPDATE, never touching created_at) in exchange for never permanently
+// losing a new one to clock skew.
+const INCREMENTAL_LOOKBACK_BUFFER_MS = 10 * 60 * 1000;
+
+function incrementalCutoff(sinceIso) {
+  return new Date(new Date(sinceIso).getTime() - INCREMENTAL_LOOKBACK_BUFFER_MS).toISOString();
+}
+
 // Returns every currently-open alert (mode='full') or everything changed
-// since the last sync (mode='incremental'). No row cap is applied here (no
-// documented pagination for Get-SCOMAlert the way SQL's TOP works), so
-// stoppedEarly is always false -- a 'full' run is always safe to use for
-// closure detection as long as the PowerShell call itself succeeds. Tested
-// end-to-end against the real environment at 18,750 active alerts with no
-// truncation -- Invoke-Command's remoting envelope handled that volume fine.
+// since the last sync, minus a clock-skew buffer (mode='incremental'). No
+// row cap is applied here (no documented pagination for Get-SCOMAlert the
+// way SQL's TOP works), so stoppedEarly is always false -- a 'full' run is
+// always safe to use for closure detection as long as the PowerShell call
+// itself succeeds. Tested end-to-end against the real environment at
+// 18,750 active alerts with no truncation -- Invoke-Command's remoting
+// envelope handled that volume fine.
 async function fetchOpenAlerts(settings, mode, sinceIso) {
   assertCredentialsPresent(settings);
   const criteria = mode === 'incremental' && sinceIso
-    ? `ResolutionState < 255 AND LastModified > ${psStringLiteral(sinceIso)}`
+    ? `ResolutionState < 255 AND LastModified > ${psStringLiteral(incrementalCutoff(sinceIso))}`
     : 'ResolutionState < 255';
 
   const inner = `
@@ -511,4 +530,5 @@ module.exports = {
   getSettings, saveSettings, isConfigured, testConnection, runOnce, getRunStatus, requestStop,
   startAutoFetch, stopAutoFetch, isAutoFetchRunning, resumeAutoFetchIfEnabled,
   isFullSyncScheduled, resumeFullSync, getFullSyncScheduleInfo,
+  incrementalCutoff, INCREMENTAL_LOOKBACK_BUFFER_MS,
 };
