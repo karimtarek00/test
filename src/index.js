@@ -164,6 +164,7 @@ async function main() {
   pool = require('./lib/db').pool;
   const auth = require('./lib/auth');
   scomSync = require('./lib/scomSync');
+  const aiInsight = require('./lib/aiInsight');
   const buildApp = require('./app');
 
   const app = buildApp();
@@ -184,6 +185,7 @@ async function main() {
   auth.seedDefaultUsers().catch((err) => log.error({ err }, 'failed to seed default users'));
   scomSync.resumeAutoFetchIfEnabled().catch((err) => log.error({ err }, 'failed to resume scom auto-fetch'));
   scomSync.resumeFullSync().catch((err) => log.error({ err }, 'failed to arm scheduled full sync'));
+  aiInsight.resumeInsightAutoRefreshIfEnabled().catch((err) => log.error({ err }, 'failed to arm ai insight auto-refresh'));
 }
 
 main().catch((err) => {

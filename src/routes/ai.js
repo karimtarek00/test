@@ -2,6 +2,7 @@ const express = require('express');
 const { pool } = require('../lib/db');
 const { chatComplete } = require('../lib/aiClient');
 const { buildDigest, SYSTEM_PROMPT } = require('../lib/aiDigest');
+const aiInsight = require('../lib/aiInsight');
 const { AppError, asyncHandler } = require('../lib/errors');
 const { requireAdmin } = require('../lib/auth');
 const logger = require('../lib/logger');
@@ -44,6 +45,10 @@ router.put('/settings', requireAdmin, asyncHandler(async (req, res) => {
     ]
   );
   log.info({ userId: req.user?.id }, 'ai settings updated');
+  // Re-arm (or disarm) the background insight refresh immediately -- a
+  // freshly-enabled/reconfigured AI shouldn't wait for the next server
+  // restart to start keeping the Dashboard card current.
+  aiInsight.resumeInsightAutoRefreshIfEnabled().catch((err) => log.error({ err }, 'failed to re-arm ai insight auto-refresh'));
   res.json({ settings: sanitize(await getSettings()) });
 }));
 
@@ -86,26 +91,17 @@ router.get('/insights', asyncHandler(async (req, res) => {
   });
 }));
 
+// Manual trigger (the "Refresh" button) -- shares generateInsight() with
+// the background auto-refresh timer in lib/aiInsight.js, so there's exactly
+// one place that ever writes last_insight_text.
 router.post('/insights/refresh', requireAdmin, asyncHandler(async (req, res) => {
-  const settings = await getSettings();
-  if (!settings?.enabled) throw AppError.badRequest('AI integration is not enabled.');
-  const digest = await buildDigest();
-  const at = new Date().toISOString();
   try {
-    const reply = await chatComplete(settings, [
-      { role: 'system', content: SYSTEM_PROMPT },
-      {
-        role: 'user',
-        content: `DATA SNAPSHOT:\n${digest}\n\nWrite a short (3-5 sentence) operational insight for a dashboard card: call out anything that needs attention first, otherwise say things look healthy.`,
-      },
-    ]);
-    await pool.query(`UPDATE ai_settings SET last_insight_text=$1, last_insight_at=$2, last_insight_error=NULL WHERE id=1`, [reply, at]);
+    const { text, at } = await aiInsight.generateInsight();
     log.info({ userId: req.user?.id }, 'ai insight refreshed');
-    res.json({ text: reply, at });
+    res.json({ text, at });
   } catch (err) {
     log.error({ err }, 'ai insight generation failed');
-    await pool.query(`UPDATE ai_settings SET last_insight_error=$1 WHERE id=1`, [err.message]);
-    throw err;
+    throw AppError.badRequest(err.message);
   }
 }));
 

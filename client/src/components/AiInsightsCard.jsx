@@ -16,7 +16,15 @@ export default function AiInsightsCard() {
   // to any other page: DashboardPage renders this card, so its crash on
   // unmount corrupted the entire React tree, not just this component).
   const load = () => { api.get('/ai/insights').then(setData).catch(() => {}); };
-  useEffect(load, []);
+  // The backend now auto-refreshes this insight in the background every
+  // few minutes (src/lib/aiInsight.js) instead of only on manual "Refresh"
+  // clicks -- poll so an already-open dashboard tab picks up a
+  // newly-generated insight without needing a full page reload.
+  useEffect(() => {
+    load();
+    const timer = setInterval(load, 60000);
+    return () => clearInterval(timer);
+  }, []);
 
   if (!data || !data.enabled) return null; // don't clutter the dashboard when AI isn't configured
 
