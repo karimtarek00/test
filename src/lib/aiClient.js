@@ -67,7 +67,12 @@ function extractReply(json) {
   return reply;
 }
 
-async function chatComplete(settings, messages, { maxTokens = 800, temperature = 0.3 } = {}) {
+// Shared request builder for both chatComplete (plain text) and
+// chatCompleteWithTools (needs the raw message, since a tool-calling
+// response has tool_calls instead of/alongside content) -- one place that
+// builds the request body/headers so the two never drift apart on auth or
+// request-shaping behavior.
+async function requestChatCompletion(settings, messages, { maxTokens = 800, temperature = 0.3, tools } = {}) {
   if (!settings?.base_url) throw new Error('AI base URL is not set.');
   // api_key is deliberately NOT required -- an internal/self-hosted gateway
   // (confirmed by a real working reference script, which explicitly leaves
@@ -87,9 +92,10 @@ async function chatComplete(settings, messages, { maxTokens = 800, temperature =
     max_tokens: maxTokens,
     temperature,
     ...(settings.model ? { model: settings.model } : {}),
+    ...(tools && tools.length ? { tools, tool_choice: 'auto' } : {}),
   });
 
-  const json = await requestJson(url, {
+  return requestJson(url, {
     method: 'POST',
     headers: {
       'Content-Type': 'application/json',
@@ -98,8 +104,26 @@ async function chatComplete(settings, messages, { maxTokens = 800, temperature =
     },
     body,
   }, agentFor(url, settings));
+}
 
+async function chatComplete(settings, messages, opts) {
+  const json = await requestChatCompletion(settings, messages, opts);
   return extractReply(json);
 }
 
-module.exports = { chatComplete };
+// Returns the raw assistant message ({role, content, tool_calls}) instead
+// of just extracted text -- the chat route's tool-calling loop needs to see
+// tool_calls to know whether the model wants to call a tool before it has
+// a final text answer. Only meaningful for a genuinely OpenAI-message-
+// shaped gateway (json.choices[0].message); anything else falls back to a
+// plain content-only message via extractReply, so a gateway that doesn't
+// support tool calling at all still gets a normal answer, just without
+// ever populating tool_calls.
+async function chatCompleteWithTools(settings, messages, tools, opts) {
+  const json = await requestChatCompletion(settings, messages, { ...opts, tools });
+  const message = json?.choices?.[0]?.message;
+  if (!message) return { role: 'assistant', content: extractReply(json), tool_calls: null };
+  return message;
+}
+
+module.exports = { chatComplete, chatCompleteWithTools };

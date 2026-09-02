@@ -1,8 +1,9 @@
 const express = require('express');
 const { pool } = require('../lib/db');
-const { chatComplete } = require('../lib/aiClient');
+const { chatComplete, chatCompleteWithTools } = require('../lib/aiClient');
 const { buildDigest, SYSTEM_PROMPT } = require('../lib/aiDigest');
 const aiInsight = require('../lib/aiInsight');
+const aiTools = require('../lib/aiTools');
 const { AppError, asyncHandler } = require('../lib/errors');
 const { requireAdmin } = require('../lib/auth');
 const logger = require('../lib/logger');
@@ -105,6 +106,21 @@ router.post('/insights/refresh', requireAdmin, asyncHandler(async (req, res) => 
   }
 }));
 
+const MAX_TOOL_ROUNDS = 4;
+
+// Chat with tool-calling: the digest above covers aggregates/top-N/most-
+// recent, which can never include every one of potentially hundreds of
+// servers or thousands of alerts -- a question about one SPECIFIC server
+// or alarm not already in a top-5 list needs a real, on-demand database
+// query, not a bigger static prompt. When the model requests a tool
+// (get_server_status / search_alerts, see lib/aiTools.js), this executes
+// it against the live database and feeds the result back for another
+// round, up to MAX_TOOL_ROUNDS times.
+//
+// Falls back to a plain (no-tools) chat the moment a tool-calling request
+// itself fails -- not every internal gateway understands the OpenAI
+// `tools` field, and this must never turn a previously-working chat into
+// a broken one just because tool-calling isn't supported there.
 router.post('/chat', asyncHandler(async (req, res) => {
   const settings = await getSettings();
   if (!settings?.enabled) throw AppError.badRequest('AI integration is not enabled.');
@@ -112,11 +128,48 @@ router.post('/chat', asyncHandler(async (req, res) => {
   if (!Array.isArray(messages) || !messages.length) throw AppError.badRequest('messages is required.');
 
   const digest = await buildDigest();
-  const reply = await chatComplete(settings, [
+  const conversation = [
     { role: 'system', content: `${SYSTEM_PROMPT}\n\nDATA SNAPSHOT:\n${digest}` },
     ...messages,
-  ]);
-  res.json({ reply });
+  ];
+
+  let toolsSupported = true;
+  let finalReply = null;
+
+  for (let round = 0; round < MAX_TOOL_ROUNDS && finalReply === null; round++) {
+    let message;
+    if (toolsSupported) {
+      try {
+        message = await chatCompleteWithTools(settings, conversation, aiTools.TOOLS);
+      } catch (err) {
+        log.warn({ err }, 'AI gateway rejected a tool-calling request -- falling back to plain chat for this conversation');
+        toolsSupported = false;
+      }
+    }
+    if (!toolsSupported) {
+      finalReply = await chatComplete(settings, conversation);
+      break;
+    }
+    if (!message.tool_calls || !message.tool_calls.length) {
+      finalReply = message.content;
+      break;
+    }
+    conversation.push({ role: 'assistant', content: message.content || null, tool_calls: message.tool_calls });
+    for (const call of message.tool_calls) {
+      const result = await aiTools.executeTool(call.function.name, call.function.arguments);
+      conversation.push({ role: 'tool', tool_call_id: call.id, content: JSON.stringify(result) });
+    }
+  }
+
+  if (finalReply === null) {
+    // Exhausted MAX_TOOL_ROUNDS without a plain-text answer (kept calling
+    // tools) -- ask once more with no tools available so the model is
+    // forced to answer from whatever it already gathered instead of
+    // looping forever.
+    finalReply = await chatComplete(settings, conversation);
+  }
+
+  res.json({ reply: finalReply });
 }));
 
 module.exports = router;
