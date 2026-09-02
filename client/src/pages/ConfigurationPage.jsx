@@ -190,6 +190,26 @@ export default function ConfigurationPage() {
           </div>
         </div>
 
+        <div className="panel">
+          <div className="panel-header">
+            <span className="panel-title">Raw Data Diagnostics</span>
+          </div>
+          <p className="help-text" style={{ marginTop: 0 }}>
+            If a server name looks wrong on the dashboard, download a live sample straight from SCOM -- it shows the
+            raw NetbiosComputerName / PrincipalName / MonitoringObjectDisplayName fields for each alert side by side
+            with the hostname this app resolved from them and which rule was used, so a wrong name can be traced
+            back to the actual source data instead of guessed at. Reads directly from SCOM -- makes no changes to
+            this app's own data.
+          </p>
+          <a
+            className="btn"
+            href="/api/scom/run/raw-sample?limit=300"
+            style={{ display: 'inline-block', textDecoration: 'none' }}
+          >
+            Download Raw Sample (300 alerts, Excel)
+          </a>
+        </div>
+
         <AiSettingsPanel />
       </div>
     </>

@@ -236,42 +236,10 @@ function incrementalCutoff(sinceIso) {
   return new Date(new Date(sinceIso).getTime() - INCREMENTAL_LOOKBACK_BUFFER_MS).toISOString();
 }
 
-// Returns every currently-open alert (mode='full') or everything changed
-// since the last sync, minus a clock-skew buffer (mode='incremental'). No
-// row cap is applied here (no documented pagination for Get-SCOMAlert the
-// way SQL's TOP works), so stoppedEarly is always false -- a 'full' run is
-// always safe to use for closure detection as long as the PowerShell call
-// itself succeeds. Tested end-to-end against the real environment at
-// 18,750 active alerts with no truncation -- Invoke-Command's remoting
-// envelope handled that volume fine.
-async function fetchOpenAlerts(settings, mode, sinceIso) {
-  assertCredentialsPresent(settings);
-  const criteria = mode === 'incremental' && sinceIso
-    ? `ResolutionState < 255 AND LastModified > ${psStringLiteral(incrementalCutoff(sinceIso))}`
-    : 'ResolutionState < 255';
-
-  // TimeRaised/LastModified come back from Get-SCOMAlert as .NET DateTime
-  // values with Kind=Unspecified -- they represent this SCOM management
-  // server's own local wall-clock time, but carry no marker saying so.
-  // ConvertTo-Json then renders an Unspecified-Kind DateTime with NO
-  // timezone offset at all (PowerShell 7/pwsh) or as epoch-ms UTC ticks
-  // (Windows PowerShell 5.1, unambiguous). The pwsh case is exactly the bug
-  // reported live: a Node Date parses a timezone-less "2026-09-01T07:17:23"
-  // string as LOCAL to whatever timezone *the app server's own process*
-  // happens to run in -- not this management server's timezone -- so the
-  // exact same alert stores a different UTC instant depending purely on
-  // the app host's OS/TZ setting, shifting every displayed alert time by
-  // that offset (confirmed: reproduces a 3-hour shift between TZ=UTC and
-  // TZ=Asia/Riyadh parsing the identical raw string). Calling
-  // .ToUniversalTime() HERE, on the management server itself, resolves an
-  // Unspecified-Kind value using that server's own correct local-to-UTC
-  // offset before it ever leaves the machine that actually knows what
-  // timezone the value was in -- so the JSON string is always an
-  // unambiguous UTC instant, immune to the app server's own TZ entirely.
-  const inner = `
-Import-Module OperationsManager -ErrorAction Stop
-$alerts = @(Get-SCOMAlert -Criteria ${psStringLiteral(criteria)} |
-  Select-Object Id,
+// Shared property list for both a real sync fetch and the read-only raw
+// diagnostic sample below -- keeping this in one place means the debug
+// view can never drift out of sync with what a real sync actually sees.
+const ALERT_SELECT_PROPERTIES = `Select-Object Id,
     Name,
     @{Name="SeverityText";Expression={$_.Severity.ToString()}},
     @{Name="PriorityText";Expression={$_.Priority.ToString()}},
@@ -282,7 +250,105 @@ $alerts = @(Get-SCOMAlert -Criteria ${psStringLiteral(criteria)} |
     NetbiosComputerName,
     PrincipalName,
     MonitoringObjectDisplayName,
-    MonitoringObjectInMaintenanceMode)
+    MonitoringObjectInMaintenanceMode`;
+
+// Maps one raw Get-SCOMAlert row (already narrowed to
+// ALERT_SELECT_PROPERTIES) to this app's internal alert shape. Kept as one
+// shared function -- used both by the real sync (fetchOpenAlerts) and the
+// read-only raw diagnostic sample (fetchRawAlertSample) -- so a hostname
+// resolution question raised against the debug view is guaranteed to
+// reflect the exact same logic a real sync actually applied, not a
+// reimplementation that could quietly drift from it.
+function mapAlertRow(row) {
+  // NetbiosComputerName/PrincipalName are the real owning server --
+  // confirmed against a live dump where MonitoringObjectDisplayName was
+  // "Cluster Service" (a component) while these two correctly held the
+  // actual hostname/FQDN. MonitoringObjectDisplayName is kept separately
+  // as the `source` detail (what specifically triggered the alert), not
+  // used for server identity -- same lesson as the seed data's hostname
+  // filtering, caught here before it reached real synced data.
+  //
+  // Both fields come back blank for some monitored classes though (SQL
+  // Server databases, cluster resource groups) -- confirmed against a
+  // real 19k-row production export, where this fell through to
+  // MonitoringObjectDisplayName and created fake "servers" named
+  // "master"/"msdb"/"model"/"DBA_Inventory" (SQL system databases) and
+  // cluster role names. hostnameFromDisplayName() handles the two
+  // confirmed cases: a cluster role's display format embeds the real
+  // server in parentheses ("ECMDB2Role (RMP-DCDB2-ECMCS)"), and SQL
+  // Server's own fixed system database names are excluded outright
+  // rather than guessed at, since a real server *could* coincidentally
+  // share a name with some other unverified string but never with these
+  // four reserved names.
+  const displayFallback = hostnameFromDisplayName(row.MonitoringObjectDisplayName);
+  const hostname = row.NetbiosComputerName
+    || (row.PrincipalName ? row.PrincipalName.split('.')[0] : null)
+    || displayFallback
+    || 'Unknown';
+  // Records WHICH rule actually produced the hostname above -- not used by
+  // the real sync itself, only surfaced by fetchRawAlertSample() so a wrong
+  // name can be traced back to a specific field/rule instead of guessed at.
+  const hostnameSource = row.NetbiosComputerName ? 'NetbiosComputerName'
+    : row.PrincipalName ? 'PrincipalName (FQDN, first label)'
+    : displayFallback ? 'MonitoringObjectDisplayName (cluster-role-style fallback)'
+    : 'Unknown -- NetbiosComputerName/PrincipalName blank, and MonitoringObjectDisplayName was blank or an excluded SQL system database name';
+  return {
+    scomAlertId: String(row.Id),
+    hostname,
+    hostnameSource,
+    rawNetbiosComputerName: row.NetbiosComputerName || null,
+    rawPrincipalName: row.PrincipalName || null,
+    rawMonitoringObjectDisplayName: row.MonitoringObjectDisplayName || null,
+    alertName: row.Name,
+    severity: mapSeverity(row.SeverityText),
+    priority: row.PriorityText || null,
+    resolutionState: row.ResolutionState,
+    resolutionStateLabel: mapResolutionLabel(row.ResolutionState),
+    source: row.MonitoringObjectDisplayName || null,
+    repeatCount: typeof row.RepeatCount === 'number' ? row.RepeatCount : null,
+    inMaintenanceMode: !!row.MonitoringObjectInMaintenanceMode,
+    timeRaised: (parsePsDate(row.TimeRaisedUtc) || new Date()).toISOString(),
+    lastModified: (parsePsDate(row.LastModifiedUtc) || new Date()).toISOString(),
+  };
+}
+
+// Returns every currently-open alert (mode='full') or everything changed
+// since the last sync, minus a clock-skew buffer (mode='incremental'). No
+// row cap is applied here (no documented pagination for Get-SCOMAlert the
+// way SQL's TOP works), so stoppedEarly is always false -- a 'full' run is
+// always safe to use for closure detection as long as the PowerShell call
+// itself succeeds. Tested end-to-end against the real environment at
+// 18,750 active alerts with no truncation -- Invoke-Command's remoting
+// envelope handled that volume fine.
+//
+// TimeRaised/LastModified come back from Get-SCOMAlert as .NET DateTime
+// values with Kind=Unspecified -- they represent this SCOM management
+// server's own local wall-clock time, but carry no marker saying so.
+// ConvertTo-Json then renders an Unspecified-Kind DateTime with NO
+// timezone offset at all (PowerShell 7/pwsh) or as epoch-ms UTC ticks
+// (Windows PowerShell 5.1, unambiguous). The pwsh case is exactly the bug
+// reported live: a Node Date parses a timezone-less "2026-09-01T07:17:23"
+// string as LOCAL to whatever timezone *the app server's own process*
+// happens to run in -- not this management server's timezone -- so the
+// exact same alert stores a different UTC instant depending purely on
+// the app host's OS/TZ setting, shifting every displayed alert time by
+// that offset (confirmed: reproduces a 3-hour shift between TZ=UTC and
+// TZ=Asia/Riyadh parsing the identical raw string). Calling
+// .ToUniversalTime() HERE, on the management server itself, resolves an
+// Unspecified-Kind value using that server's own correct local-to-UTC
+// offset before it ever leaves the machine that actually knows what
+// timezone the value was in -- so the JSON string is always an
+// unambiguous UTC instant, immune to the app server's own TZ entirely.
+async function fetchOpenAlerts(settings, mode, sinceIso) {
+  assertCredentialsPresent(settings);
+  const criteria = mode === 'incremental' && sinceIso
+    ? `ResolutionState < 255 AND LastModified > ${psStringLiteral(incrementalCutoff(sinceIso))}`
+    : 'ResolutionState < 255';
+
+  const inner = `
+Import-Module OperationsManager -ErrorAction Stop
+$alerts = @(Get-SCOMAlert -Criteria ${psStringLiteral(criteria)} |
+  ${ALERT_SELECT_PROPERTIES})
 ConvertTo-Json -InputObject $alerts -Depth 5 -Compress
 `.trim();
   const script = buildRemoteScript(settings.management_server, settings.winrm_username, inner);
@@ -292,47 +358,41 @@ ConvertTo-Json -InputObject $alerts -Depth 5 -Compress
   const parsed = trimmed ? JSON.parse(trimmed) : [];
   const rows = Array.isArray(parsed) ? parsed : [parsed];
 
-  const items = rows.map((row) => {
-    // NetbiosComputerName/PrincipalName are the real owning server --
-    // confirmed against a live dump where MonitoringObjectDisplayName was
-    // "Cluster Service" (a component) while these two correctly held the
-    // actual hostname/FQDN. MonitoringObjectDisplayName is kept separately
-    // as the `source` detail (what specifically triggered the alert), not
-    // used for server identity -- same lesson as the seed data's hostname
-    // filtering, caught here before it reached real synced data.
-    //
-    // Both fields come back blank for some monitored classes though (SQL
-    // Server databases, cluster resource groups) -- confirmed against a
-    // real 19k-row production export, where this fell through to
-    // MonitoringObjectDisplayName and created fake "servers" named
-    // "master"/"msdb"/"model"/"DBA_Inventory" (SQL system databases) and
-    // cluster role names. hostnameFromDisplayName() handles the two
-    // confirmed cases: a cluster role's display format embeds the real
-    // server in parentheses ("ECMDB2Role (RMP-DCDB2-ECMCS)"), and SQL
-    // Server's own fixed system database names are excluded outright
-    // rather than guessed at, since a real server *could* coincidentally
-    // share a name with some other unverified string but never with these
-    // four reserved names.
-    const hostname = row.NetbiosComputerName
-      || (row.PrincipalName ? row.PrincipalName.split('.')[0] : null)
-      || hostnameFromDisplayName(row.MonitoringObjectDisplayName)
-      || 'Unknown';
-    return {
-      scomAlertId: String(row.Id),
-      hostname,
-      alertName: row.Name,
-      severity: mapSeverity(row.SeverityText),
-      priority: row.PriorityText || null,
-      resolutionState: row.ResolutionState,
-      resolutionStateLabel: mapResolutionLabel(row.ResolutionState),
-      source: row.MonitoringObjectDisplayName || null,
-      repeatCount: typeof row.RepeatCount === 'number' ? row.RepeatCount : null,
-      inMaintenanceMode: !!row.MonitoringObjectInMaintenanceMode,
-      timeRaised: (parsePsDate(row.TimeRaisedUtc) || new Date()).toISOString(),
-      lastModified: (parsePsDate(row.LastModifiedUtc) || new Date()).toISOString(),
-    };
-  });
+  const items = rows.map(mapAlertRow);
   return { items, stoppedEarly: false };
+}
+
+const RAW_SAMPLE_MAX_LIMIT = 2000;
+
+// Read-only diagnostic: pulls a small, bounded sample of alerts straight
+// from SCOM (via the exact same Select-Object shape and mapAlertRow logic
+// a real sync uses) and returns it WITHOUT writing anything to the
+// database -- purely a way to see the raw NetbiosComputerName/
+// PrincipalName/MonitoringObjectDisplayName fields side by side with the
+// hostname this app resolved from them, so a wrong server name can be
+// traced to a specific field/rule instead of guessed at. `-First N` is
+// applied on the SCOM server itself (before Select-Object even runs), so
+// a small sample stays fast regardless of how many alerts are actually
+// open fleet-wide.
+async function fetchRawAlertSample(settingsOverride, limit) {
+  const settings = settingsOverride || (await getSettings());
+  assertCredentialsPresent(settings);
+  const boundedLimit = Math.max(1, Math.min(RAW_SAMPLE_MAX_LIMIT, parseInt(limit, 10) || 300));
+
+  const inner = `
+Import-Module OperationsManager -ErrorAction Stop
+$alerts = @(Get-SCOMAlert -Criteria ${psStringLiteral('ResolutionState < 255')} |
+  Select-Object -First ${boundedLimit} |
+  ${ALERT_SELECT_PROPERTIES})
+ConvertTo-Json -InputObject $alerts -Depth 5 -Compress
+`.trim();
+  const script = buildRemoteScript(settings.management_server, settings.winrm_username, inner);
+
+  const stdout = await runPowerShell(script, { SCOM_WINRM_PASSWORD: settings.winrm_password });
+  const trimmed = stdout.trim();
+  const parsed = trimmed ? JSON.parse(trimmed) : [];
+  const rows = Array.isArray(parsed) ? parsed : [parsed];
+  return rows.map(mapAlertRow);
 }
 
 async function runOnce(options = {}) {
@@ -552,4 +612,5 @@ module.exports = {
   startAutoFetch, stopAutoFetch, isAutoFetchRunning, resumeAutoFetchIfEnabled,
   isFullSyncScheduled, resumeFullSync, getFullSyncScheduleInfo,
   incrementalCutoff, INCREMENTAL_LOOKBACK_BUFFER_MS,
+  fetchRawAlertSample,
 };
