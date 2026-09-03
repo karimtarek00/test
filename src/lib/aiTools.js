@@ -107,12 +107,16 @@ async function searchAlerts(args = {}) {
 
 const TOOL_IMPLS = { get_server_status: getServerStatus, search_alerts: searchAlerts };
 
+// argsJson is a JSON string for a real OpenAI-shaped tool call (function
+// .arguments is always a string there), but extractTextToolCalls() below
+// hands over an already-parsed object for the plain-text convention -- so
+// this accepts either rather than assuming a string.
 async function executeTool(name, argsJson) {
   const impl = TOOL_IMPLS[name];
   if (!impl) return { error: `Unknown tool: ${name}` };
   let args;
   try {
-    args = argsJson ? JSON.parse(argsJson) : {};
+    args = typeof argsJson === 'object' && argsJson !== null ? argsJson : (argsJson ? JSON.parse(argsJson) : {});
   } catch {
     return { error: 'Could not parse tool arguments as JSON.' };
   }
@@ -123,4 +127,49 @@ async function executeTool(name, argsJson) {
   }
 }
 
-module.exports = { TOOLS, executeTool };
+// Some gateways/models aren't wired to the OpenAI tools API at all and
+// instead emit a tool-call *request* as literal text in the message
+// content, using the Hermes/NousResearch-style convention:
+//   <tool_call>
+//   {"name": "get_server_status", "arguments": {"hostname": "X"}}
+//   </tool_call>
+// (confirmed live: this app's chat widget showed exactly this raw markup
+// to a user instead of it being executed, because chatCompleteWithTools
+// only recognized the structured tool_calls field). This scans a
+// message's plain-text content for one or more such blocks and returns
+// them normalized to the same {id, function:{name, arguments}} shape a
+// real tool_calls array would have, so routes/ai.js's loop can treat both
+// conventions identically.
+function extractTextToolCalls(content) {
+  if (!content || typeof content !== 'string') return [];
+  const calls = [];
+  const re = /<tool_call>([\s\S]*?)<\/tool_call>/g;
+  let match;
+  let i = 0;
+  while ((match = re.exec(content))) {
+    try {
+      const parsed = JSON.parse(match[1].trim());
+      if (parsed && parsed.name) {
+        calls.push({
+          id: `text_tool_call_${i++}`,
+          function: { name: parsed.name, arguments: parsed.arguments || {} },
+        });
+      }
+    } catch {
+      // Malformed JSON inside the tag -- skip it rather than crash the
+      // whole chat turn over one unparsable block.
+    }
+  }
+  return calls;
+}
+
+// Defensive strip for whatever's left in a final reply -- a model can
+// emit a tool_call block alongside ordinary prose, or the tool-call round
+// budget can run out mid-conversation; either way, raw <tool_call>/
+// <tool_response> markup must never reach the chat UI.
+function stripToolCallMarkup(text) {
+  if (!text || typeof text !== 'string') return text;
+  return text.replace(/<tool_call>[\s\S]*?<\/tool_call>/g, '').replace(/<tool_response>[\s\S]*?<\/tool_response>/g, '').trim();
+}
+
+module.exports = { TOOLS, executeTool, extractTextToolCalls, stripToolCallMarkup };

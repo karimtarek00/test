@@ -108,7 +108,17 @@ async function requestChatCompletion(settings, messages, { maxTokens = 800, temp
 
 async function chatComplete(settings, messages, opts) {
   const json = await requestChatCompletion(settings, messages, opts);
-  return extractReply(json);
+  const reply = extractReply(json);
+  // Stripped here (not in chatCompleteWithTools) because this function's
+  // callers (AI Insight generation, the connection test) never parse for
+  // tool calls afterward -- a model that emits <tool_call> markup by habit
+  // even when no tools were offered in the request must never leak that
+  // raw markup into the Dashboard's insight card or the "Reply with
+  // exactly: OK" connection test either, not just the chat widget.
+  // Required lazily (not at module top) so this otherwise generic,
+  // DB-agnostic HTTP client doesn't pull in aiTools' database dependency
+  // just to load.
+  return require('./aiTools').stripToolCallMarkup(reply);
 }
 
 // Returns the raw assistant message ({role, content, tool_calls}) instead

@@ -150,14 +150,25 @@ router.post('/chat', asyncHandler(async (req, res) => {
       finalReply = await chatComplete(settings, conversation);
       break;
     }
-    if (!message.tool_calls || !message.tool_calls.length) {
+    // Not every gateway/model actually implements the OpenAI tool_calls
+    // response field -- some instead emit the request as plain text using
+    // the Hermes/NousResearch <tool_call>{...}</tool_call> convention
+    // (confirmed live: a user saw this raw markup in the chat widget
+    // instead of it being executed). Recognize both shapes identically.
+    const toolCalls = message.tool_calls && message.tool_calls.length
+      ? message.tool_calls
+      : aiTools.extractTextToolCalls(message.content);
+    if (!toolCalls.length) {
       finalReply = message.content;
       break;
     }
-    conversation.push({ role: 'assistant', content: message.content || null, tool_calls: message.tool_calls });
-    for (const call of message.tool_calls) {
+    conversation.push({ role: 'assistant', content: message.content || null, tool_calls: message.tool_calls || undefined });
+    for (const call of toolCalls) {
       const result = await aiTools.executeTool(call.function.name, call.function.arguments);
-      conversation.push({ role: 'tool', tool_call_id: call.id, content: JSON.stringify(result) });
+      // Wrapped in <tool_response> as well as sent under the 'tool' role --
+      // covers both a real OpenAI-style consumer and a text-convention
+      // model that only reads the literal tag out of message content.
+      conversation.push({ role: 'tool', tool_call_id: call.id, content: `<tool_response>${JSON.stringify(result)}</tool_response>` });
     }
   }
 
@@ -169,7 +180,11 @@ router.post('/chat', asyncHandler(async (req, res) => {
     finalReply = await chatComplete(settings, conversation);
   }
 
-  res.json({ reply: finalReply });
+  // Defensive strip regardless of which path produced finalReply -- raw
+  // <tool_call>/<tool_response> markup must never reach the chat UI, even
+  // if a model rambles with one alongside real prose or the round budget
+  // ran out mid-conversation.
+  res.json({ reply: aiTools.stripToolCallMarkup(finalReply) });
 }));
 
 module.exports = router;
