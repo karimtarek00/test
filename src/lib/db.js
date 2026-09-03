@@ -59,6 +59,9 @@ if (scomSettingsTableExists) {
   if (!scomSettingsCols.includes('last_autofetch_error')) {
     db.exec('ALTER TABLE scom_settings ADD COLUMN last_autofetch_error TEXT');
   }
+  if (!scomSettingsCols.includes('timestamp_adjustment_minutes')) {
+    db.exec('ALTER TABLE scom_settings ADD COLUMN timestamp_adjustment_minutes INTEGER NOT NULL DEFAULT 0');
+  }
 }
 
 const alertsTableExists = !!db.prepare("SELECT name FROM sqlite_master WHERE type='table' AND name='alerts'").get();

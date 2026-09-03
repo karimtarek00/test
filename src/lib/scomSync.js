@@ -46,7 +46,6 @@ const { execFile } = require('child_process');
 const { pool, withWriteLock, yieldToEventLoop } = require('./db');
 const { invalidateHealthScoreCache } = require('./healthScore');
 const { normalizeServerName } = require('./serverNameMatch');
-const { ORG_UTC_OFFSET_MINUTES } = require('./orgTime');
 const logger = require('./logger');
 
 const log = logger.forModule('scom-sync');
@@ -78,6 +77,13 @@ async function saveSettings(fields) {
   const autoFetchIntervalMinutes = merged.auto_fetch_interval_minutes !== undefined && merged.auto_fetch_interval_minutes !== null && merged.auto_fetch_interval_minutes !== ''
     ? Math.max(1, parseInt(merged.auto_fetch_interval_minutes, 10) || 5)
     : 5;
+  // Signed (can be negative) -- a manual correction on top of
+  // parseScomTimestamp()'s "raw digits are already UTC" default, for
+  // whatever residual gap this specific management server turns out to
+  // have. 0 = no adjustment, the confirmed-correct default.
+  const timestampAdjustmentMinutes = merged.timestamp_adjustment_minutes !== undefined && merged.timestamp_adjustment_minutes !== null && merged.timestamp_adjustment_minutes !== ''
+    ? parseInt(merged.timestamp_adjustment_minutes, 10) || 0
+    : 0;
   // A blank password in the incoming fields means "leave the stored
   // password alone" (the settings form never receives the real password
   // back to redisplay, so it can't round-trip it) -- only overwrite when a
@@ -85,9 +91,9 @@ async function saveSettings(fields) {
   const winrmPassword = fields.winrm_password ? fields.winrm_password : current.winrm_password || null;
   await pool.query(
     `UPDATE scom_settings SET management_server=$1, winrm_username=$2, winrm_password=$3,
-       full_sync_interval_minutes=$4, auto_fetch_interval_minutes=$5,
+       full_sync_interval_minutes=$4, auto_fetch_interval_minutes=$5, timestamp_adjustment_minutes=$6,
        updated_at=strftime('%Y-%m-%dT%H:%M:%fZ','now') WHERE id = 1`,
-    [merged.management_server || null, merged.winrm_username || null, winrmPassword, fullSyncIntervalMinutes, autoFetchIntervalMinutes]
+    [merged.management_server || null, merged.winrm_username || null, winrmPassword, fullSyncIntervalMinutes, autoFetchIntervalMinutes, timestampAdjustmentMinutes]
   );
   const saved = await getSettings();
   scheduleFullSyncTicks(saved.full_sync_interval_minutes);
@@ -205,37 +211,38 @@ function hostnameFromDisplayName(displayName) {
   return displayName;
 }
 
-// A prior fix here called .ToUniversalTime() on the SCOM server before
-// ConvertTo-Json, reasoning that Get-SCOMAlert's DateTime values are
-// Kind=Unspecified representing that server's own local wall-clock time --
-// but that conversion is a NO-OP whenever the value's Kind is already Utc,
-// or whenever the SCOM server's own OS clock happens to be set to UTC
-// (common in real IT environments, precisely so server-side logs/timestamps
-// stay DST-proof, even while every human-facing display -- the Console
-// included -- still renders adjusted local time). If either is true,
-// .ToUniversalTime() silently does nothing, and the exact same shift a user
-// reported (still 3 hours off after that fix shipped) would persist
-// completely undetected by any test that doesn't have a real management
-// server to check against.
+// Two different code-only assumptions about this SCOM management server's
+// clock/timezone behavior have now each shipped and turned out wrong,
+// neither catchable without live production data to check against:
+//   1. .ToUniversalTime() on the SCOM server, assuming Kind=Unspecified
+//      meant "this server's own local time" -- a no-op if Kind was
+//      already Utc, or if that server's OS clock is itself set to UTC.
+//   2. Subtracting this org's confirmed UTC+3 offset from the raw
+//      wall-clock digits, assuming those digits were Saudi local time --
+//      confirmed WRONG by a live report: every alert then displayed
+//      exactly 3 hours EARLIER than the real event time, which is the
+//      unambiguous signature of subtracting an offset from a value that
+//      was already correct UTC.
 //
-// This version sidesteps DateTime.Kind and both machines' OS timezone
-// settings entirely: fetchOpenAlerts asks PowerShell to format the raw
-// wall-clock digits with .ToString("yyyy-MM-dd HH:mm:ss") -- a component
-// read with NO timezone math applied by .NET regardless of Kind, i.e.
-// exactly the numbers a human reads off the SCOM Console for that alert.
-// parsePsLocalToUtcIso() below then converts that literal string using
-// this organization's own CONFIRMED fixed UTC+3 offset (the same constant
-// already verified and in production use for the Reports feature's date
-// filtering -- see lib/orgTime.js) -- never a guess about either server's
-// clock.
-function parsePsLocalToUtcIso(localWallClock) {
-  if (!localWallClock) return null;
-  // "yyyy-MM-dd HH:mm:ss" -> treat as if it were UTC first (so Date's
-  // parser doesn't apply yet another ambiguous local-timezone guess of
-  // its own), then shift by the org's real, known offset.
-  const asIfUtc = new Date(`${localWallClock.replace(' ', 'T')}.000Z`);
-  if (isNaN(asIfUtc.getTime())) return null;
-  return new Date(asIfUtc.getTime() - ORG_UTC_OFFSET_MINUTES * 60000).toISOString();
+// That live report is the actual evidence this now runs on: the raw
+// digits Get-SCOMAlert returns for TimeRaised/LastModified on THIS
+// deployment's management server already ARE UTC-equivalent -- no
+// arithmetic needed, just an explicit 'Z' suffix so Node's own parser
+// can't apply yet another ambiguous local-timezone guess (the ORIGINAL
+// bug, before either fix above). See ALERT_SELECT_PROPERTIES for why the
+// raw string itself is trustworthy: .ToString("yyyy-MM-dd HH:mm:ss")
+// applies no timezone math regardless of Kind, so this reflects exactly
+// what Get-SCOMAlert returned.
+//
+// `adjustmentMinutes` (scom_settings.timestamp_adjustment_minutes, default
+// 0) is a manual escape hatch on top of that -- added after getting this
+// wrong twice already, so a still-real gap can be corrected from the
+// Configuration page without waiting on another guess-and-deploy cycle.
+function parseScomTimestamp(rawWallClock, adjustmentMinutes = 0) {
+  if (!rawWallClock) return null;
+  const asUtc = new Date(`${rawWallClock.replace(' ', 'T')}.000Z`);
+  if (isNaN(asUtc.getTime())) return null;
+  return new Date(asUtc.getTime() + (adjustmentMinutes || 0) * 60000).toISOString();
 }
 
 // An incremental tick's cutoff (sinceIso) is stamped by THIS app server's
@@ -279,7 +286,7 @@ const ALERT_SELECT_PROPERTIES = `Select-Object Id,
 // resolution question raised against the debug view is guaranteed to
 // reflect the exact same logic a real sync actually applied, not a
 // reimplementation that could quietly drift from it.
-function mapAlertRow(row) {
+function mapAlertRow(row, adjustmentMinutes) {
   // NetbiosComputerName/PrincipalName are the real owning server --
   // confirmed against a live dump where MonitoringObjectDisplayName was
   // "Cluster Service" (a component) while these two correctly held the
@@ -334,8 +341,8 @@ function mapAlertRow(row) {
     // real production data without guessing.
     rawTimeRaisedLocal: row.TimeRaisedLocal || null,
     rawLastModifiedLocal: row.LastModifiedLocal || null,
-    timeRaised: parsePsLocalToUtcIso(row.TimeRaisedLocal) || new Date().toISOString(),
-    lastModified: parsePsLocalToUtcIso(row.LastModifiedLocal) || new Date().toISOString(),
+    timeRaised: parseScomTimestamp(row.TimeRaisedLocal, adjustmentMinutes) || new Date().toISOString(),
+    lastModified: parseScomTimestamp(row.LastModifiedLocal, adjustmentMinutes) || new Date().toISOString(),
   };
 }
 
@@ -352,26 +359,10 @@ function mapAlertRow(row) {
 // formats these with .ToString("yyyy-MM-dd HH:mm:ss") on the SCOM server --
 // a literal component read (year/month/day/hour/minute/second exactly as
 // stored) with NO timezone conversion applied by .NET, regardless of the
-// value's DateTime.Kind. That's deliberate: an earlier version of this
-// code called .ToUniversalTime() here instead, reasoning that an
-// Unspecified-Kind value represents the management server's own local
-// time and converting it there (where that's true) would produce a
-// correct, unambiguous UTC instant. It shipped, and the reported symptom
-// (alerts still exactly 3 hours off) didn't go away -- because
-// .ToUniversalTime() is a silent no-op whenever the value's Kind is
-// already Utc, or whenever the management server's own OS clock is itself
-// set to UTC (a common real-world setup specifically to stay DST-proof,
-// even though every human-facing display -- SCOM's Console included --
-// still renders adjusted local time). Either condition makes that
-// "fix" do nothing, invisible to any test that isn't run against the
-// real server.
-//
-// parsePsLocalToUtcIso() converts the literal wall-clock string using
-// this organization's own CONFIRMED fixed UTC+3 offset (lib/orgTime.js --
-// the same constant already verified in production for the Reports
-// feature) instead of any DateTime.Kind or OS-timezone assumption on
-// either machine. Whatever a human reads for TimeRaised on the SCOM
-// Console for a given alert is exactly the string this converts.
+// value's DateTime.Kind. parseScomTimestamp() (above) then treats that
+// literal string as UTC directly plus scom_settings.timestamp_adjustment_
+// minutes -- see that function's comment for the two prior, live-data-
+// confirmed-wrong assumptions this replaced.
 async function fetchOpenAlerts(settings, mode, sinceIso) {
   assertCredentialsPresent(settings);
   const criteria = mode === 'incremental' && sinceIso
@@ -391,7 +382,8 @@ ConvertTo-Json -InputObject $alerts -Depth 5 -Compress
   const parsed = trimmed ? JSON.parse(trimmed) : [];
   const rows = Array.isArray(parsed) ? parsed : [parsed];
 
-  const items = rows.map(mapAlertRow);
+  const adjustmentMinutes = settings.timestamp_adjustment_minutes || 0;
+  const items = rows.map((row) => mapAlertRow(row, adjustmentMinutes));
   return { items, stoppedEarly: false };
 }
 
@@ -425,7 +417,8 @@ ConvertTo-Json -InputObject $alerts -Depth 5 -Compress
   const trimmed = stdout.trim();
   const parsed = trimmed ? JSON.parse(trimmed) : [];
   const rows = Array.isArray(parsed) ? parsed : [parsed];
-  return rows.map(mapAlertRow);
+  const adjustmentMinutes = settings.timestamp_adjustment_minutes || 0;
+  return rows.map((row) => mapAlertRow(row, adjustmentMinutes));
 }
 
 async function runOnce(options = {}) {

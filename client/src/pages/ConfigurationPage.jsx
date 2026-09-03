@@ -3,7 +3,7 @@ import { api } from '../api/client.js';
 import TopBar from '../components/TopBar.jsx';
 import AiSettingsPanel from '../components/AiSettingsPanel.jsx';
 
-const EMPTY_FORM = { managementServer: '', winrmUsername: '', winrmPassword: '', fullSyncIntervalMinutes: 30, autoFetchIntervalMinutes: 5 };
+const EMPTY_FORM = { managementServer: '', winrmUsername: '', winrmPassword: '', fullSyncIntervalMinutes: 30, autoFetchIntervalMinutes: 5, timestampAdjustmentMinutes: 0 };
 
 export default function ConfigurationPage() {
   const [form, setForm] = useState(null);
@@ -26,6 +26,7 @@ export default function ConfigurationPage() {
         winrmPassword: '',
         fullSyncIntervalMinutes: s.full_sync_interval_minutes ?? 30,
         autoFetchIntervalMinutes: s.auto_fetch_interval_minutes ?? 5,
+        timestampAdjustmentMinutes: s.timestamp_adjustment_minutes ?? 0,
       });
     });
   };
@@ -136,6 +137,15 @@ export default function ConfigurationPage() {
                 <label>Auto-Sync Interval (minutes)</label>
                 <input className="input" type="number" min="1" value={form.autoFetchIntervalMinutes} onChange={set('autoFetchIntervalMinutes')} />
                 <span className="text-faint" style={{ fontSize: 11 }}>How often the lightweight background check runs, once Auto-Sync is enabled below.</span>
+              </div>
+              <div className="field">
+                <label>Timestamp Adjustment (minutes)</label>
+                <input className="input" type="number" step="1" value={form.timestampAdjustmentMinutes} onChange={set('timestampAdjustmentMinutes')} />
+                <span className="text-faint" style={{ fontSize: 11 }}>
+                  Leave at 0 unless alert times are consistently off by a fixed amount. Use the Raw Data Diagnostics
+                  download below to compare a real alert's raw SCOM time against its actual time, then enter the
+                  difference here (negative if this app's times run late, positive if they run early).
+                </span>
               </div>
             </div>
 

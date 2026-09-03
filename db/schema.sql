@@ -139,6 +139,15 @@ CREATE TABLE IF NOT EXISTS scom_settings (
   -- scomSync.js. Runs independently of the 5-min incremental auto-fetch.
   -- 0 = disabled.
   full_sync_interval_minutes  INTEGER NOT NULL DEFAULT 30,
+  -- Manual escape hatch for whatever residual timestamp gap this specific
+  -- SCOM management server turns out to have -- added after two different
+  -- code-only assumptions about its clock/timezone behavior both turned
+  -- out wrong in ways that couldn't be caught without live production
+  -- data. Added (in minutes, can be negative) to every alert's
+  -- TimeRaised/LastModified AFTER they're read as literal UTC digits (see
+  -- scomSync.js's parseScomTimestamp) -- 0 means "no adjustment needed",
+  -- which is the confirmed-correct default for this deployment.
+  timestamp_adjustment_minutes INTEGER NOT NULL DEFAULT 0,
   updated_at                  TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))
 );
 INSERT OR IGNORE INTO scom_settings (id) VALUES (1);
