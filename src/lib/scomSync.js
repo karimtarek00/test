@@ -46,6 +46,7 @@ const { execFile } = require('child_process');
 const { pool, withWriteLock, yieldToEventLoop } = require('./db');
 const { invalidateHealthScoreCache } = require('./healthScore');
 const { normalizeServerName } = require('./serverNameMatch');
+const { ORG_UTC_OFFSET_MINUTES } = require('./orgTime');
 const logger = require('./logger');
 
 const log = logger.forModule('scom-sync');
@@ -204,18 +205,37 @@ function hostnameFromDisplayName(displayName) {
   return displayName;
 }
 
-// PowerShell's ConvertTo-Json can render a DateTime as either a plain ISO
-// string (PowerShell 7/pwsh) or the legacy "/Date(ticks)/" form (Windows
-// PowerShell 5.1) depending on version -- handle both rather than assuming.
-// Both forms are safe here ONLY because fetchOpenAlerts explicitly converts
-// every DateTime to UTC (.ToUniversalTime()) before ConvertTo-Json ever
-// touches it -- see the comment there for why that matters.
-function parsePsDate(value) {
-  if (!value) return null;
-  const legacyMatch = /\/Date\((\d+)\)\//.exec(value);
-  if (legacyMatch) return new Date(Number(legacyMatch[1]));
-  const d = new Date(value);
-  return isNaN(d.getTime()) ? null : d;
+// A prior fix here called .ToUniversalTime() on the SCOM server before
+// ConvertTo-Json, reasoning that Get-SCOMAlert's DateTime values are
+// Kind=Unspecified representing that server's own local wall-clock time --
+// but that conversion is a NO-OP whenever the value's Kind is already Utc,
+// or whenever the SCOM server's own OS clock happens to be set to UTC
+// (common in real IT environments, precisely so server-side logs/timestamps
+// stay DST-proof, even while every human-facing display -- the Console
+// included -- still renders adjusted local time). If either is true,
+// .ToUniversalTime() silently does nothing, and the exact same shift a user
+// reported (still 3 hours off after that fix shipped) would persist
+// completely undetected by any test that doesn't have a real management
+// server to check against.
+//
+// This version sidesteps DateTime.Kind and both machines' OS timezone
+// settings entirely: fetchOpenAlerts asks PowerShell to format the raw
+// wall-clock digits with .ToString("yyyy-MM-dd HH:mm:ss") -- a component
+// read with NO timezone math applied by .NET regardless of Kind, i.e.
+// exactly the numbers a human reads off the SCOM Console for that alert.
+// parsePsLocalToUtcIso() below then converts that literal string using
+// this organization's own CONFIRMED fixed UTC+3 offset (the same constant
+// already verified and in production use for the Reports feature's date
+// filtering -- see lib/orgTime.js) -- never a guess about either server's
+// clock.
+function parsePsLocalToUtcIso(localWallClock) {
+  if (!localWallClock) return null;
+  // "yyyy-MM-dd HH:mm:ss" -> treat as if it were UTC first (so Date's
+  // parser doesn't apply yet another ambiguous local-timezone guess of
+  // its own), then shift by the org's real, known offset.
+  const asIfUtc = new Date(`${localWallClock.replace(' ', 'T')}.000Z`);
+  if (isNaN(asIfUtc.getTime())) return null;
+  return new Date(asIfUtc.getTime() - ORG_UTC_OFFSET_MINUTES * 60000).toISOString();
 }
 
 // An incremental tick's cutoff (sinceIso) is stamped by THIS app server's
@@ -244,8 +264,8 @@ const ALERT_SELECT_PROPERTIES = `Select-Object Id,
     @{Name="SeverityText";Expression={$_.Severity.ToString()}},
     @{Name="PriorityText";Expression={$_.Priority.ToString()}},
     ResolutionState,
-    @{Name="TimeRaisedUtc";Expression={ if ($_.TimeRaised) { $_.TimeRaised.ToUniversalTime().ToString("o") } else { $null } }},
-    @{Name="LastModifiedUtc";Expression={ if ($_.LastModified) { $_.LastModified.ToUniversalTime().ToString("o") } else { $null } }},
+    @{Name="TimeRaisedLocal";Expression={ if ($_.TimeRaised) { $_.TimeRaised.ToString("yyyy-MM-dd HH:mm:ss") } else { $null } }},
+    @{Name="LastModifiedLocal";Expression={ if ($_.LastModified) { $_.LastModified.ToString("yyyy-MM-dd HH:mm:ss") } else { $null } }},
     RepeatCount,
     NetbiosComputerName,
     PrincipalName,
@@ -307,8 +327,15 @@ function mapAlertRow(row) {
     source: row.MonitoringObjectDisplayName || null,
     repeatCount: typeof row.RepeatCount === 'number' ? row.RepeatCount : null,
     inMaintenanceMode: !!row.MonitoringObjectInMaintenanceMode,
-    timeRaised: (parsePsDate(row.TimeRaisedUtc) || new Date()).toISOString(),
-    lastModified: (parsePsDate(row.LastModifiedUtc) || new Date()).toISOString(),
+    // Raw, unconverted wall-clock strings kept on the item too (not just
+    // the converted ISO values below) so fetchRawAlertSample can show
+    // exactly what SCOM returned side by side with what this app
+    // converted it to -- the only way to verify a timezone fix against
+    // real production data without guessing.
+    rawTimeRaisedLocal: row.TimeRaisedLocal || null,
+    rawLastModifiedLocal: row.LastModifiedLocal || null,
+    timeRaised: parsePsLocalToUtcIso(row.TimeRaisedLocal) || new Date().toISOString(),
+    lastModified: parsePsLocalToUtcIso(row.LastModifiedLocal) || new Date().toISOString(),
   };
 }
 
@@ -321,24 +348,30 @@ function mapAlertRow(row) {
 // 18,750 active alerts with no truncation -- Invoke-Command's remoting
 // envelope handled that volume fine.
 //
-// TimeRaised/LastModified come back from Get-SCOMAlert as .NET DateTime
-// values with Kind=Unspecified -- they represent this SCOM management
-// server's own local wall-clock time, but carry no marker saying so.
-// ConvertTo-Json then renders an Unspecified-Kind DateTime with NO
-// timezone offset at all (PowerShell 7/pwsh) or as epoch-ms UTC ticks
-// (Windows PowerShell 5.1, unambiguous). The pwsh case is exactly the bug
-// reported live: a Node Date parses a timezone-less "2026-09-01T07:17:23"
-// string as LOCAL to whatever timezone *the app server's own process*
-// happens to run in -- not this management server's timezone -- so the
-// exact same alert stores a different UTC instant depending purely on
-// the app host's OS/TZ setting, shifting every displayed alert time by
-// that offset (confirmed: reproduces a 3-hour shift between TZ=UTC and
-// TZ=Asia/Riyadh parsing the identical raw string). Calling
-// .ToUniversalTime() HERE, on the management server itself, resolves an
-// Unspecified-Kind value using that server's own correct local-to-UTC
-// offset before it ever leaves the machine that actually knows what
-// timezone the value was in -- so the JSON string is always an
-// unambiguous UTC instant, immune to the app server's own TZ entirely.
+// TimeRaised/LastModified timezone handling: ALERT_SELECT_PROPERTIES
+// formats these with .ToString("yyyy-MM-dd HH:mm:ss") on the SCOM server --
+// a literal component read (year/month/day/hour/minute/second exactly as
+// stored) with NO timezone conversion applied by .NET, regardless of the
+// value's DateTime.Kind. That's deliberate: an earlier version of this
+// code called .ToUniversalTime() here instead, reasoning that an
+// Unspecified-Kind value represents the management server's own local
+// time and converting it there (where that's true) would produce a
+// correct, unambiguous UTC instant. It shipped, and the reported symptom
+// (alerts still exactly 3 hours off) didn't go away -- because
+// .ToUniversalTime() is a silent no-op whenever the value's Kind is
+// already Utc, or whenever the management server's own OS clock is itself
+// set to UTC (a common real-world setup specifically to stay DST-proof,
+// even though every human-facing display -- SCOM's Console included --
+// still renders adjusted local time). Either condition makes that
+// "fix" do nothing, invisible to any test that isn't run against the
+// real server.
+//
+// parsePsLocalToUtcIso() converts the literal wall-clock string using
+// this organization's own CONFIRMED fixed UTC+3 offset (lib/orgTime.js --
+// the same constant already verified in production for the Reports
+// feature) instead of any DateTime.Kind or OS-timezone assumption on
+// either machine. Whatever a human reads for TimeRaised on the SCOM
+// Console for a given alert is exactly the string this converts.
 async function fetchOpenAlerts(settings, mode, sinceIso) {
   assertCredentialsPresent(settings);
   const criteria = mode === 'incremental' && sinceIso

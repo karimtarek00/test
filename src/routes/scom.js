@@ -106,7 +106,12 @@ router.get('/run/raw-sample', asyncHandler(async (req, res) => {
     'Raw MonitoringObjectDisplayName': a.rawMonitoringObjectDisplayName || '',
     'Severity': a.severity,
     'Resolution State': a.resolutionStateLabel,
-    'Time Raised (UTC)': a.timeRaised,
+    // Both the literal string SCOM returned (compare this directly against
+    // what the SCOM Console shows for the same alert) and what this app
+    // converted it to -- the only way to verify a timezone fix against
+    // real data instead of guessing at it again.
+    'Raw Time Raised (from SCOM, no conversion)': a.rawTimeRaisedLocal || '',
+    'Converted Time Raised (UTC, stored in this app)': a.timeRaised,
   }));
   // Explicit header order -- json_to_sheet silently drops a column
   // entirely if every row's value for it is null/undefined (a real bug
@@ -115,7 +120,8 @@ router.get('/run/raw-sample', asyncHandler(async (req, res) => {
   const HEADER = [
     'Alert Name', 'Resolved Hostname', 'Resolution Rule',
     'Raw NetbiosComputerName', 'Raw PrincipalName', 'Raw MonitoringObjectDisplayName',
-    'Severity', 'Resolution State', 'Time Raised (UTC)',
+    'Severity', 'Resolution State',
+    'Raw Time Raised (from SCOM, no conversion)', 'Converted Time Raised (UTC, stored in this app)',
   ];
   const sheet = XLSX.utils.json_to_sheet(rows, { header: HEADER });
   const wb = XLSX.utils.book_new();
