@@ -54,9 +54,13 @@ let syncing = false;
 let stopRequested = false;
 let currentProgress = null;
 let lastResult = null;
+// Tracked separately from lastResult (a differently-shaped {open, created,
+// updated, closed} sync result) so the two outcomes can never render as
+// each other's fields in the UI.
+let lastRecalculateResult = null;
 
 function getRunStatus() {
-  return { running: syncing, progress: syncing ? currentProgress : null, lastResult };
+  return { running: syncing, progress: syncing ? currentProgress : null, lastResult, lastRecalculateResult };
 }
 
 function requestStop() {
@@ -561,6 +565,74 @@ async function runOnce(options = {}) {
   }
 }
 
+// One-time historical correction, deliberately separate from runOnce()'s
+// normal sync path. created_at is immutable there on purpose (a re-sync
+// must never overwrite "when did this alert really first fire" just
+// because SCOM was polled again) -- but that protection is exactly what
+// keeps an alert's ORIGINALLY-WRONG timestamp permanent once a timezone
+// bug like the one fixed in parseScomTimestamp() has already stored it.
+// A brand-new alert synced after that fix is correct from the start; an
+// alert synced before it keeps the old, wrong value forever unless
+// something explicitly overwrites it -- this is that something.
+//
+// Only covers currently-OPEN alerts: Get-SCOMAlert's live "ResolutionState
+// < 255" criteria can't return an alert that's already closed, so there's
+// no way to re-derive a corrected timestamp for one from SCOM anymore --
+// its original (possibly wrong) created_at is what history is stuck with.
+async function recalculateTimestamps() {
+  if (syncing) return { ok: false, skipped: true, error: 'A sync is already in progress -- wait for it to finish and try again.' };
+  syncing = true;
+  currentProgress = { startedAt: Date.now(), mode: 'recalculate' };
+  try {
+    const settings = await getSettings();
+    assertCredentialsPresent(settings);
+    const { items } = await fetchOpenAlerts(settings, 'full');
+
+    let checked = 0, corrected = 0;
+    await withWriteLock(async () => {
+      const client = await pool.connect();
+      try {
+        await client.query('BEGIN');
+        const existingRows = await client.query(
+          `SELECT id, scom_alert_id, created_at, last_modified FROM alerts WHERE scom_alert_id IS NOT NULL AND origin='sync'`
+        );
+        const existingByGuid = new Map(existingRows.rows.map((r) => [r.scom_alert_id, r]));
+
+        for (const a of items) {
+          const existing = existingByGuid.get(a.scomAlertId);
+          if (!existing) continue; // not yet synced -- runOnce() will INSERT it normally
+          checked++;
+          if (existing.created_at !== a.timeRaised || existing.last_modified !== a.lastModified) {
+            await client.query(
+              `UPDATE alerts SET created_at=$1, last_modified=$2 WHERE id=$3`,
+              [a.timeRaised, a.lastModified, existing.id]
+            );
+            corrected++;
+          }
+        }
+        await client.query('COMMIT');
+      } catch (err) {
+        await client.query('ROLLBACK');
+        throw err;
+      } finally {
+        client.release();
+      }
+    });
+
+    if (corrected > 0) invalidateHealthScoreCache();
+    const result = { ok: true, checked, corrected, at: new Date().toISOString() };
+    log.info(result, 'one-time timestamp recalculation completed');
+    lastRecalculateResult = result;
+    return result;
+  } catch (err) {
+    lastRecalculateResult = { ok: false, error: err.message, at: new Date().toISOString() };
+    throw err;
+  } finally {
+    syncing = false;
+    currentProgress = null;
+  }
+}
+
 const DEFAULT_AUTO_FETCH_MINUTES = 5;
 let autoFetchTimer = null;
 
@@ -638,5 +710,5 @@ module.exports = {
   startAutoFetch, stopAutoFetch, isAutoFetchRunning, resumeAutoFetchIfEnabled,
   isFullSyncScheduled, resumeFullSync, getFullSyncScheduleInfo,
   incrementalCutoff, INCREMENTAL_LOOKBACK_BUFFER_MS,
-  fetchRawAlertSample,
+  fetchRawAlertSample, recalculateTimestamps,
 };

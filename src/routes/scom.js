@@ -78,6 +78,22 @@ router.post('/stop', (req, res) => {
   res.json({ ok: true });
 });
 
+// One-time historical correction for alerts synced before a timezone fix
+// shipped -- their created_at/last_modified were computed with the old,
+// wrong logic and stay wrong forever otherwise (a normal sync deliberately
+// never rewrites an existing alert's created_at). Only reaches currently-
+// open alerts; SCOM's live query can't return anything already closed.
+// Same fire-and-forget + poll-status shape as /run, since a live
+// Get-SCOMAlert call can take a while.
+router.post('/recalculate-timestamps', (req, res) => {
+  const status = scomSync.getRunStatus();
+  if (status.running) {
+    return res.json({ ok: false, skipped: true, error: 'A sync is already in progress -- wait for it to finish and try again.' });
+  }
+  scomSync.recalculateTimestamps().catch((err) => log.error({ err }, 'scom timestamp recalculation failed'));
+  res.json({ ok: true, started: true });
+});
+
 router.post('/auto-fetch/start', asyncHandler(async (req, res) => {
   await scomSync.startAutoFetch();
   log.info({ userId: req.user?.id }, 'scom auto-fetch started');

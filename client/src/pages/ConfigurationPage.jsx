@@ -102,6 +102,21 @@ export default function ConfigurationPage() {
     }, 1200);
   };
 
+  const runRecalculate = async () => {
+    if (!confirm('Re-fetch every currently open alert from SCOM and overwrite its stored timestamp with the corrected value? This only needs to run once, after a timestamp fix, to correct alerts that were already synced before it. Already-closed alerts cannot be corrected this way.')) return;
+    const data = await api.post('/scom/recalculate-timestamps', {});
+    if (data.skipped) { setRunStatus({ error: data.error }); return; }
+    setRunStatus({ running: true });
+    pollRef.current = setInterval(async () => {
+      const status = await api.get('/scom/run/status');
+      setRunStatus(status);
+      if (!status.running) {
+        clearInterval(pollRef.current);
+        load();
+      }
+    }, 1200);
+  };
+
   return (
     <>
       <TopBar title="Configuration" />
@@ -185,19 +200,34 @@ export default function ConfigurationPage() {
           <div className="drawer-row"><span className="k">Status</span><span className="v">{settingsRaw?.last_sync_status || '—'}</span></div>
           <div className="drawer-row"><span className="k">Open / New / Closed</span><span className="v">{settingsRaw?.last_sync_open_count ?? '—'} / {settingsRaw?.last_sync_new_count ?? '—'} / {settingsRaw?.last_sync_closed_count ?? '—'}</span></div>
           {settingsRaw?.last_sync_error && <div className="drawer-row"><span className="k">Error</span><span className="v text-dim">{settingsRaw.last_sync_error}</span></div>}
-          <div style={{ marginTop: 14 }}>
+          <div style={{ marginTop: 14, display: 'flex', gap: 10, flexWrap: 'wrap' }}>
             <button className="btn" type="button" onClick={runSyncNow} disabled={runStatus?.running}>
               {runStatus?.running ? 'Syncing…' : 'Run Sync Now'}
             </button>
-            {runStatus?.error && <div className="error-text" style={{ marginTop: 10 }}>{runStatus.error}</div>}
-            {runStatus?.lastResult && !runStatus.running && (
-              <div className="help-text" style={{ marginTop: 10 }}>
-                {runStatus.lastResult.ok
-                  ? `Done: ${runStatus.lastResult.open} open (${runStatus.lastResult.created} new, ${runStatus.lastResult.updated} updated, ${runStatus.lastResult.closed} closed).`
-                  : `Failed: ${runStatus.lastResult.error}`}
-              </div>
-            )}
+            <button className="btn-secondary btn" type="button" onClick={runRecalculate} disabled={runStatus?.running}>
+              {runStatus?.running ? 'Working…' : 'Recalculate Timestamps'}
+            </button>
           </div>
+          <span className="text-faint" style={{ fontSize: 11, display: 'block', marginTop: 6 }}>
+            Recalculate Timestamps is a one-time fix for alerts synced before a timestamp correction shipped -- it
+            re-fetches every currently open alert from SCOM and overwrites its stored time with the corrected value.
+            Already-closed alerts can't be corrected this way.
+          </span>
+          {runStatus?.error && <div className="error-text" style={{ marginTop: 10 }}>{runStatus.error}</div>}
+          {runStatus?.lastResult && !runStatus.running && (
+            <div className="help-text" style={{ marginTop: 10 }}>
+              {runStatus.lastResult.ok
+                ? `Done: ${runStatus.lastResult.open} open (${runStatus.lastResult.created} new, ${runStatus.lastResult.updated} updated, ${runStatus.lastResult.closed} closed).`
+                : `Failed: ${runStatus.lastResult.error}`}
+            </div>
+          )}
+          {runStatus?.lastRecalculateResult && !runStatus.running && (
+            <div className="help-text" style={{ marginTop: 10 }}>
+              {runStatus.lastRecalculateResult.ok
+                ? `Recalculation done: ${runStatus.lastRecalculateResult.checked} open alert(s) checked, ${runStatus.lastRecalculateResult.corrected} corrected.`
+                : `Recalculation failed: ${runStatus.lastRecalculateResult.error}`}
+            </div>
+          )}
         </div>
 
         <div className="panel">
