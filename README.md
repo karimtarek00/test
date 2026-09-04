@@ -8,12 +8,14 @@ service tooling.
 
 ## Status
 
-Early scaffold. The SCOM sync engine (`src/lib/scomSync.js`) has its full
-settings/scheduling/run-status lifecycle wired up, but the actual SQL query
-(`fetchOpenAlerts`) is a stub pending read access to the `OperationsManager`
-database — see the Configuration page. Everything else (auth, inventory,
-alerts, import, reports, critical watchlist, health score) is functional
-against locally imported/seeded data.
+Functional end-to-end against a real SCOM environment. The SCOM sync engine
+(`src/lib/scomSync.js`) pulls alerts via PowerShell Remoting
+(`Invoke-Command`) into the actual SCOM Management Server, which runs
+`Get-SCOMAlert` there — verified against 18,750+ real active alerts. Auth,
+inventory, alerts, import, reports (PDF/Word/Excel), analysis, AI chat, and
+critical watchlist are all live. See "SCOM sync (WinRM)" below for setup,
+including a one-time WinRM client prerequisite that bites on every new
+server this app is moved to.
 
 ## Quick start
 
@@ -91,29 +93,73 @@ before swapping anything — that backup is what a rollback restores.
 - `backups/` — snapshots created by `ops/deploy.js`/`ops/rollback.js` (and one pre-restructure snapshot from this session)
 - `logs/` — PM2-captured stdout/stderr (pino JSON), rotated by `ops/rotateLogs.js`
 
-## SCOM SQL sync
+## SCOM sync (WinRM)
 
-`src/lib/scomSync.js` connects to `OperationsManager` via `mssql` and syncs the
-`Alert`/`BaseManagedEntity` tables (incremental + full modes, closure
-detection gated on a complete fetch, first-seen `created_at`/TimeRaised vs
-last-seen `last_modified`/LastModified kept as two separate fields per the
-correctness rule that bit a similar integration before). Table/column names
-match SCOM's documented schema but haven't been run against a live instance
-in this environment — verify once real SQL access is available, and adjust
-the query in `fetchOpenAlerts()` if this installation's schema differs.
-Configuration page has Test Connection + Run Sync Now with live progress.
+`src/lib/scomSync.js` pulls alerts via PowerShell Remoting
+(`Invoke-Command -ComputerName <management-server> -Credential $cred`) into
+the real SCOM Management Server, which runs `Get-SCOMAlert` there — nothing
+is installed on this app's own host, and no direct database or local
+PowerShell module access is needed. The account used must have BOTH Remote
+Management Users membership on the management server AND a SCOM Read-Only
+Operator role, on the same account (`Invoke-Command` authenticates as one
+identity). Incremental + full sync modes, closure detection gated on a
+complete fetch, first-seen `created_at`/TimeRaised vs last-seen
+`last_modified`/LastModified kept as two separate fields (a re-sync never
+overwrites when an alert first fired). Configuration page has Test
+Connection, Run Sync Now, Auto-Sync scheduling, a Recalculate Timestamps
+one-time correction tool, and a Raw Data Diagnostics export for tracing a
+wrong server name or timestamp back to the actual SCOM data that produced
+it.
+
+### One-time WinRM client prerequisite (every new server this app runs on)
+
+The FIRST time this app runs on a given Windows server — including after
+moving it to a new production box — a sync attempt can fail with:
+
+```
+The WinRM client cannot process the request. Default authentication may
+be used with an IP address under the following conditions: the transport
+is HTTPS or the destination is in the TrustedHosts list...
+```
+
+This is a Windows WinRM *client* setting on the machine running Server
+Watch, not an app bug — it has nothing to do with the app's own code or
+configuration. Windows' default WinRM authentication (Negotiate/Kerberos)
+refuses to connect to a bare IP address unless that IP is explicitly
+trusted, since Kerberos can't be verified without a resolvable hostname/SPN.
+A domain-joined server talking to another server by hostname often doesn't
+hit this at all; a workgroup server, or one connecting by IP (as this app
+does, to the management server's IP), does.
+
+Fix once per server, from an elevated (Administrator) PowerShell prompt:
+
+```powershell
+winrm quickconfig -quiet
+Set-Item WSMan:\localhost\Client\TrustedHosts -Value "<management-server-ip-or-hostname>" -Concatenate -Force
+Get-Item WSMan:\localhost\Client\TrustedHosts   # verify it's listed
+```
+
+Then retry Test Connection on the Configuration page. `-Concatenate` adds
+to the existing list rather than replacing it, safe to run even if
+TrustedHosts already has other entries.
 
 ## AI integration
 
 `src/lib/aiClient.js` (generic chat-completions HTTP client, tolerant of
-minor response-shape differences between gateways) + `src/lib/aiDigest.js`
-(compact real-data digest + grounding system prompt) + `src/routes/ai.js`
-power a Dashboard insights card and a floating "Ask AI" chat widget —
-both hidden until an admin configures and enables it on the Configuration
-page. Nothing is sent to any endpoint until Enabled is checked.
+minor response-shape differences between gateways, including a gateway that
+emits tool-call requests as plain `<tool_call>` text instead of the OpenAI
+`tool_calls` field) + `src/lib/aiDigest.js` (real-data digest covering
+fleet/alerts, SCOM sync status, reports, imports, and users, plus a
+grounding system prompt and a static "how this app works" reference) +
+`src/lib/aiTools.js` (function-calling tools so the AI can look up one
+specific server or alert by name, not just aggregates) + `src/routes/ai.js`
+power a Dashboard insights card (auto-refreshes in the background) and a
+floating "Ask AI" chat widget — both hidden until an admin configures and
+enables it on the Configuration page. Nothing is sent to any endpoint until
+Enabled is checked.
 
 ## Known gaps (next steps)
 
-1. **Server inventory** — currently seeded/derived from alert data only; import a real export via Import Data once available.
-2. **Classification axis** (OS / Prod-Non-Prod / business unit) and Critical Servers grouping are placeholders — currently grouped by a guessed data-center prefix from hostnames.
-3. **Word/Excel reports** — only the PDF summary report is implemented so far; `docx`/`xlsx` report generation can be added to `src/lib/reportGenerators.js` the same way.
+1. **Server inventory classification axis** (OS type / environment / business unit / data center) is mostly unpopulated for sync-created servers — SCOM's alert data doesn't carry these directly; would need either a separate inventory import or a richer SCOM query.
+2. **Historical timestamp correction** only reaches currently-open alerts (Configuration page's Recalculate Timestamps) — an already-closed alert's timestamp, if it was synced before a timezone fix, can't be re-derived since SCOM's live query no longer returns it.
+3. **AI tool-calling** depends on the configured gateway/model actually supporting function calling (either the OpenAI `tool_calls` field or the `<tool_call>` text convention this app also recognizes) — a gateway using neither will still chat normally, just without the ability to look up one specific server/alert by name.
