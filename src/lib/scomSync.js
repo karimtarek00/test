@@ -203,12 +203,41 @@ function mapResolutionLabel(code) {
 // these for every SQL Server instance that exists.
 const SQL_SYSTEM_DATABASES = new Set(['master', 'model', 'msdb', 'tempdb']);
 
+// Confirmed against both this app's own seed/demo data and a real
+// production dump: when an alert is raised directly against the
+// "Operating System" class instance itself (a huge category -- memory/CPU/
+// disk alerts), MonitoringObjectDisplayName is just the OS platform's own
+// display name -- "Microsoft Windows Server 2019 Standard", "Red Hat
+// Enterprise Linux Server release 7.9 (Maipo)", etc -- describing the
+// software running on the server, not identifying which server it is.
+// This is exactly how ~1,495 real alerts ended up "hosted" on a fake
+// device literally named "Microsoft Windows Server 2019 Standard": Path
+// had no backslash for these (see hostnameFromPath above), so resolution
+// fell through all the way to this display name and accepted it as-is.
+const GENERIC_OS_PLATFORM_NAME_PATTERNS = [
+  /^Microsoft Windows Server\b/i,
+  /^Microsoft Windows\b/i,
+  /^Red Hat Enterprise Linux\b/i,
+  /^CentOS\b/i,
+  /^Ubuntu\b/i,
+  /^SUSE Linux Enterprise\b/i,
+  /^Oracle Linux\b/i,
+];
+function isGenericOsPlatformName(name) {
+  return GENERIC_OS_PLATFORM_NAME_PATTERNS.some((re) => re.test(name.trim()));
+}
+
 function hostnameFromDisplayName(displayName) {
   if (!displayName) return null;
   // A cluster resource group's display name is "<RoleName> (<Server>)" --
   // confirmed against a real alert ("ECMDB2Role (RMP-DCDB2-ECMCS)") where
   // NetbiosComputerName/PrincipalName were both blank for that alert's
-  // target class. The parenthetical part is the real server.
+  // target class. The parenthetical part is the real server. Checked
+  // before the generic-OS-name exclusion since "Red Hat Enterprise Linux
+  // Server release 7.9 (Maipo)" also ends in parens but that parenthetical
+  // is a codename, not a server -- isGenericOsPlatformName's prefix match
+  // catches it either way since it tests the start of the raw string.
+  if (isGenericOsPlatformName(displayName)) return null;
   const clusterMatch = displayName.match(/\(([^)]+)\)\s*$/);
   if (clusterMatch) return clusterMatch[1];
   if (SQL_SYSTEM_DATABASES.has(displayName.trim().toLowerCase())) return null;
@@ -227,8 +256,19 @@ function hostnameFromDisplayName(displayName) {
 // (the "master"/"msdb"/"DBA_Inventory" fake-server problem): those three
 // fields describe the alerting OBJECT, but Path always starts from the
 // real server that object lives on.
+// Confirmed against a real production dump: for an alert raised directly
+// against the "Operating System" instance itself (a huge category --
+// memory/CPU/disk alerts), this org's SCOM environment returns a Path with
+// NO backslash at all -- just the object's own class name (e.g. "Microsoft
+// Windows Server 2019 Standard"), because that object has no recorded
+// "hosted by" chain to walk up to the real computer. A path with no
+// backslash carries no server identity whatsoever, so returning it as if
+// it were a hostname was exactly how ~1,495 real alerts ended up with
+// "Microsoft Windows Server 2019 Standard" as their "server name" -- must
+// require a backslash (an actual "<hostname>\<class chain>" shape) before
+// trusting the first segment.
 function hostnameFromPath(path) {
-  if (!path) return null;
+  if (!path || !path.includes('\\')) return null;
   const serverSegment = path.split('\\')[0];
   if (!serverSegment) return null;
   return serverSegment.split('.')[0];
@@ -451,6 +491,23 @@ ConvertTo-Json -InputObject $alerts -Depth 5 -Compress
   const rows = Array.isArray(parsed) ? parsed : [parsed];
   const adjustmentMinutes = settings.timestamp_adjustment_minutes || 0;
   return rows.map((row) => mapAlertRow(row, adjustmentMinutes));
+}
+
+// Full, unbounded raw export -- every currently-open alert, with the same
+// raw diagnostic fields as fetchRawAlertSample(), but with no `-First N`
+// cap. Reuses fetchOpenAlerts()'s exact live query (mode 'full', no
+// since-cutoff) -- the same one runOnce() already uses for a real sync,
+// already proven to handle this org's real fleet scale (~18,750 alerts,
+// see file header) in one Invoke-Command round trip. fetchRawAlertSample's
+// bounded sample exists for a *fast* look at a handful of alerts; this is
+// for "I want everything," where a `-First N` cap risks silently missing
+// whole alert categories if SCOM doesn't return rows in a representative
+// order. Still read-only -- nothing is written to the database.
+async function fetchAllRawAlerts(settingsOverride) {
+  const settings = settingsOverride || (await getSettings());
+  assertCredentialsPresent(settings);
+  const { items } = await fetchOpenAlerts(settings, 'full', null);
+  return items;
 }
 
 async function runOnce(options = {}) {
@@ -738,5 +795,5 @@ module.exports = {
   startAutoFetch, stopAutoFetch, isAutoFetchRunning, resumeAutoFetchIfEnabled,
   isFullSyncScheduled, resumeFullSync, getFullSyncScheduleInfo,
   incrementalCutoff, INCREMENTAL_LOOKBACK_BUFFER_MS,
-  fetchRawAlertSample, recalculateTimestamps,
+  fetchRawAlertSample, fetchAllRawAlerts, recalculateTimestamps,
 };

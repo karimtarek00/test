@@ -241,13 +241,26 @@ export default function ConfigurationPage() {
             back to the actual source data instead of guessed at. Reads directly from SCOM -- makes no changes to
             this app's own data.
           </p>
-          <a
-            className="btn"
-            href="/api/scom/run/raw-sample?limit=300"
-            style={{ display: 'inline-block', textDecoration: 'none' }}
-          >
-            Download Raw Sample (300 alerts, Excel)
-          </a>
+          <div className="toolbar" style={{ flexWrap: 'wrap' }}>
+            <a
+              className="btn"
+              href="/api/scom/run/raw-sample?limit=300"
+              style={{ display: 'inline-block', textDecoration: 'none' }}
+            >
+              Download Raw Sample (300 alerts, Excel)
+            </a>
+            <a
+              className="btn-secondary btn"
+              href="/api/scom/export/raw-all"
+              style={{ display: 'inline-block', textDecoration: 'none' }}
+            >
+              Export ALL Raw Alerts (Excel)
+            </a>
+          </div>
+          <p className="help-text" style={{ marginTop: 8, marginBottom: 0 }}>
+            "Export ALL" pulls every currently open alert from SCOM (not a capped sample) -- the same live query a
+            full sync uses. This can take a while and produce a large file in a big environment.
+          </p>
         </div>
 
         <AiSettingsPanel />

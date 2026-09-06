@@ -100,21 +100,18 @@ router.post('/auto-fetch/start', asyncHandler(async (req, res) => {
   res.json({ ok: true });
 }));
 
-// Read-only diagnostic: pulls a small live sample straight from SCOM (no
-// database writes at all) and returns it as an Excel file with the raw
-// NetbiosComputerName/PrincipalName/MonitoringObjectDisplayName fields
-// alongside the hostname this app resolved from them and which rule
-// produced it -- for tracing a specific wrong server name back to the
-// actual SCOM data that caused it, rather than guessing.
-router.get('/run/raw-sample', asyncHandler(async (req, res) => {
-  let items;
-  try {
-    items = await scomSync.fetchRawAlertSample(null, req.query.limit);
-  } catch (err) {
-    log.warn({ err }, 'scom raw alert sample failed');
-    throw AppError.badRequest(err.message);
-  }
-  const rows = items.map((a) => ({
+// Shared by both raw-export routes below (the small bounded sample and the
+// full unbounded export) so their output columns can never drift apart --
+// a wrong server name traced in one should look identical in the other.
+const RAW_EXPORT_HEADER = [
+  'Alert Name', 'Resolved Hostname', 'Resolution Rule',
+  'Raw NetbiosComputerName', 'Raw PrincipalName', 'Raw MonitoringObjectPath', 'Raw MonitoringObjectDisplayName',
+  'Severity', 'Resolution State',
+  'Raw Time Raised (from SCOM, no conversion)', 'Converted Time Raised (UTC, stored in this app)',
+];
+
+function toRawExportRows(items) {
+  return items.map((a) => ({
     'Alert Name': a.alertName,
     'Resolved Hostname': a.hostname,
     'Resolution Rule': a.hostnameSource,
@@ -131,24 +128,58 @@ router.get('/run/raw-sample', asyncHandler(async (req, res) => {
     'Raw Time Raised (from SCOM, no conversion)': a.rawTimeRaisedLocal || '',
     'Converted Time Raised (UTC, stored in this app)': a.timeRaised,
   }));
+}
+
+function sendRawExportXlsx(res, items, { sheetName, filenamePrefix }) {
+  const rows = toRawExportRows(items);
   // Explicit header order -- json_to_sheet silently drops a column
   // entirely if every row's value for it is null/undefined (a real bug
   // caught earlier in this app's other Excel exports), and an all-blank
   // raw field is exactly the case this diagnostic exists to show.
-  const HEADER = [
-    'Alert Name', 'Resolved Hostname', 'Resolution Rule',
-    'Raw NetbiosComputerName', 'Raw PrincipalName', 'Raw MonitoringObjectPath', 'Raw MonitoringObjectDisplayName',
-    'Severity', 'Resolution State',
-    'Raw Time Raised (from SCOM, no conversion)', 'Converted Time Raised (UTC, stored in this app)',
-  ];
-  const sheet = XLSX.utils.json_to_sheet(rows, { header: HEADER });
+  const sheet = XLSX.utils.json_to_sheet(rows, { header: RAW_EXPORT_HEADER });
   const wb = XLSX.utils.book_new();
-  XLSX.utils.book_append_sheet(wb, sheet, 'Raw Sample');
+  XLSX.utils.book_append_sheet(wb, sheet, sheetName);
   const buffer = XLSX.write(wb, { type: 'buffer', bookType: 'xlsx' });
-  log.info({ userId: req.user?.id, rows: rows.length }, 'scom raw alert sample downloaded');
   res.setHeader('Content-Type', 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet');
-  res.setHeader('Content-Disposition', `attachment; filename="scom-raw-sample-${new Date().toISOString().slice(0, 10)}.xlsx"`);
+  res.setHeader('Content-Disposition', `attachment; filename="${filenamePrefix}-${new Date().toISOString().slice(0, 10)}.xlsx"`);
   res.send(buffer);
+  return rows.length;
+}
+
+// Read-only diagnostic: pulls a small live sample straight from SCOM (no
+// database writes at all) and returns it as an Excel file with the raw
+// NetbiosComputerName/PrincipalName/MonitoringObjectDisplayName fields
+// alongside the hostname this app resolved from them and which rule
+// produced it -- for tracing a specific wrong server name back to the
+// actual SCOM data that caused it, rather than guessing.
+router.get('/run/raw-sample', asyncHandler(async (req, res) => {
+  let items;
+  try {
+    items = await scomSync.fetchRawAlertSample(null, req.query.limit);
+  } catch (err) {
+    log.warn({ err }, 'scom raw alert sample failed');
+    throw AppError.badRequest(err.message);
+  }
+  const rowCount = sendRawExportXlsx(res, items, { sheetName: 'Raw Sample', filenamePrefix: 'scom-raw-sample' });
+  log.info({ userId: req.user?.id, rows: rowCount }, 'scom raw alert sample downloaded');
+}));
+
+// Same shape as the sample above, but with no `-First N` cap at all --
+// every currently-open alert, fetched via the exact same live query a real
+// full sync uses (already proven at this org's real fleet scale, ~18,750
+// alerts, in one Invoke-Command round trip -- see scomSync.js's file
+// header). For "I want ALL the raw data, not just a couple hundred", not
+// for a quick look at a handful of alerts (use the sample route for that).
+router.get('/export/raw-all', asyncHandler(async (req, res) => {
+  let items;
+  try {
+    items = await scomSync.fetchAllRawAlerts();
+  } catch (err) {
+    log.warn({ err }, 'scom full raw alert export failed');
+    throw AppError.badRequest(err.message);
+  }
+  const rowCount = sendRawExportXlsx(res, items, { sheetName: 'All Raw Alerts', filenamePrefix: 'scom-raw-export-all' });
+  log.info({ userId: req.user?.id, rows: rowCount }, 'scom full raw alert export downloaded');
 }));
 
 router.post('/auto-fetch/stop', asyncHandler(async (req, res) => {
