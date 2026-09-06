@@ -215,6 +215,25 @@ function hostnameFromDisplayName(displayName) {
   return displayName;
 }
 
+// The SCOM Console's own "Path" field (shown in Alert Details) -- confirmed
+// against a real screenshot -- is always formatted
+// "<hostname>.<domain>\<class/component chain>", e.g.
+// "RMP-ITAPP-PCB1.SEC.se.com.sa\Microsoft Windows Server 2022 Standard".
+// The segment before the FIRST backslash is always the actual hosting
+// Windows Computer object's path, regardless of how deeply nested the
+// alerting object itself is (a SQL database, a cluster resource group,
+// etc.) -- this is what makes it reliable exactly where
+// NetbiosComputerName/PrincipalName/MonitoringObjectDisplayName all fail
+// (the "master"/"msdb"/"DBA_Inventory" fake-server problem): those three
+// fields describe the alerting OBJECT, but Path always starts from the
+// real server that object lives on.
+function hostnameFromPath(path) {
+  if (!path) return null;
+  const serverSegment = path.split('\\')[0];
+  if (!serverSegment) return null;
+  return serverSegment.split('.')[0];
+}
+
 // Two different code-only assumptions about this SCOM management server's
 // clock/timezone behavior have now each shipped and turned out wrong,
 // neither catchable without live production data to check against:
@@ -281,6 +300,7 @@ const ALERT_SELECT_PROPERTIES = `Select-Object Id,
     NetbiosComputerName,
     PrincipalName,
     MonitoringObjectDisplayName,
+    MonitoringObjectPath,
     MonitoringObjectInMaintenanceMode`;
 
 // Maps one raw Get-SCOMAlert row (already narrowed to
@@ -304,16 +324,22 @@ function mapAlertRow(row, adjustmentMinutes) {
   // real 19k-row production export, where this fell through to
   // MonitoringObjectDisplayName and created fake "servers" named
   // "master"/"msdb"/"model"/"DBA_Inventory" (SQL system databases) and
-  // cluster role names. hostnameFromDisplayName() handles the two
-  // confirmed cases: a cluster role's display format embeds the real
-  // server in parentheses ("ECMDB2Role (RMP-DCDB2-ECMCS)"), and SQL
-  // Server's own fixed system database names are excluded outright
-  // rather than guessed at, since a real server *could* coincidentally
-  // share a name with some other unverified string but never with these
-  // four reserved names.
+  // cluster role names.
+  //
+  // MonitoringObjectPath (the SCOM Console's own "Path" field, confirmed
+  // against a real screenshot) fixes this properly: it's always
+  // "<hostname>.<domain>\<class chain>", and the segment before the first
+  // backslash is always the real hosting server regardless of how deeply
+  // nested the alerting object is -- so it catches exactly the cases
+  // NetbiosComputerName/PrincipalName miss, without needing to guess at
+  // display-name patterns. hostnameFromDisplayName()'s cluster-role/
+  // SQL-system-database handling is kept only as a last-resort fallback
+  // for the rare case Path itself is also blank.
+  const pathHostname = hostnameFromPath(row.MonitoringObjectPath);
   const displayFallback = hostnameFromDisplayName(row.MonitoringObjectDisplayName);
   const hostname = row.NetbiosComputerName
     || (row.PrincipalName ? row.PrincipalName.split('.')[0] : null)
+    || pathHostname
     || displayFallback
     || 'Unknown';
   // Records WHICH rule actually produced the hostname above -- not used by
@@ -321,14 +347,16 @@ function mapAlertRow(row, adjustmentMinutes) {
   // name can be traced back to a specific field/rule instead of guessed at.
   const hostnameSource = row.NetbiosComputerName ? 'NetbiosComputerName'
     : row.PrincipalName ? 'PrincipalName (FQDN, first label)'
+    : pathHostname ? 'MonitoringObjectPath (server segment before first backslash)'
     : displayFallback ? 'MonitoringObjectDisplayName (cluster-role-style fallback)'
-    : 'Unknown -- NetbiosComputerName/PrincipalName blank, and MonitoringObjectDisplayName was blank or an excluded SQL system database name';
+    : 'Unknown -- NetbiosComputerName/PrincipalName/MonitoringObjectPath blank, and MonitoringObjectDisplayName was blank or an excluded SQL system database name';
   return {
     scomAlertId: String(row.Id),
     hostname,
     hostnameSource,
     rawNetbiosComputerName: row.NetbiosComputerName || null,
     rawPrincipalName: row.PrincipalName || null,
+    rawMonitoringObjectPath: row.MonitoringObjectPath || null,
     rawMonitoringObjectDisplayName: row.MonitoringObjectDisplayName || null,
     alertName: row.Name,
     severity: mapSeverity(row.SeverityText),

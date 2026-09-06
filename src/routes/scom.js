@@ -120,6 +120,7 @@ router.get('/run/raw-sample', asyncHandler(async (req, res) => {
     'Resolution Rule': a.hostnameSource,
     'Raw NetbiosComputerName': a.rawNetbiosComputerName || '',
     'Raw PrincipalName': a.rawPrincipalName || '',
+    'Raw MonitoringObjectPath': a.rawMonitoringObjectPath || '',
     'Raw MonitoringObjectDisplayName': a.rawMonitoringObjectDisplayName || '',
     'Severity': a.severity,
     'Resolution State': a.resolutionStateLabel,
@@ -136,7 +137,7 @@ router.get('/run/raw-sample', asyncHandler(async (req, res) => {
   // raw field is exactly the case this diagnostic exists to show.
   const HEADER = [
     'Alert Name', 'Resolved Hostname', 'Resolution Rule',
-    'Raw NetbiosComputerName', 'Raw PrincipalName', 'Raw MonitoringObjectDisplayName',
+    'Raw NetbiosComputerName', 'Raw PrincipalName', 'Raw MonitoringObjectPath', 'Raw MonitoringObjectDisplayName',
     'Severity', 'Resolution State',
     'Raw Time Raised (from SCOM, no conversion)', 'Converted Time Raised (UTC, stored in this app)',
   ];
