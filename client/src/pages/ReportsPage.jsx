@@ -5,7 +5,7 @@ import TopBar from '../components/TopBar.jsx';
 const REPORT_TYPES = [
   { value: 'inventory', label: 'Server Inventory', description: 'Point-in-time listing of every monitored server -- no date range needed.', ranged: false },
   { value: 'alerts', label: 'Alerts', description: 'Every alert that occurred in the selected range, filterable by server/type/severity. Includes alerts since resolved or closed -- a ranged report always reflects what genuinely happened in the window, not just what is still open today.', ranged: true },
-  { value: 'summary', label: 'Summary', description: 'Totals by severity, a daily trend (bucketed by local calendar day), and top alarm types/servers for the selected range.', ranged: true },
+  { value: 'summary', label: 'Summary', description: 'A dashboard-style report: KPI cards, severity/resolution-state donut charts, a monthly trend chart, ranked alarm-type/device bars, and a least-healthy-devices table. PDF shows the full visual layout; Word/Excel export the same data as tables.', ranged: true },
 ];
 const FORMATS = [
   { value: 'pdf', label: 'PDF' },
