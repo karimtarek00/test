@@ -34,7 +34,7 @@ const TOOLS = [
     type: 'function',
     function: {
       name: 'search_alerts',
-      description: 'Search alerts by any combination of server, alert name/type, severity, and resolution state (open/closed). Use this for any question about specific alerts/alarms that the data snapshot\'s top-5 lists don\'t already answer -- e.g. "how many Warning alerts are on server X", "is there an alert called Y anywhere", "list open alerts for server Z", "how many Critical alerts are closed".',
+      description: 'Search alerts by any combination of server, alert name/type, severity, resolution state (open/closed), and date range. Returns matching rows by default, or grouped counts (e.g. "how many alerts per severity") when groupBy is set. Use this for any question about specific alerts/alarms that the data snapshot\'s top-5 lists don\'t already answer -- e.g. "how many Warning alerts are on server X", "is there an alert called Y anywhere", "list open alerts for server Z", "how many alerts happened last week", "break down alerts by severity for server X".',
       parameters: {
         type: 'object',
         properties: {
@@ -42,11 +42,42 @@ const TOOLS = [
           alertName: { type: 'string', description: 'Exact or partial alert name/type to match.' },
           severity: { type: 'string', enum: ['Critical', 'Warning', 'Information'] },
           resolution: { type: 'string', enum: ['open', 'closed'], description: 'Filter to only open or only closed alerts. Omit to include both.' },
+          from: { type: 'string', description: 'Start of date range, "YYYY-MM-DD". Omit for no lower bound.' },
+          to: { type: 'string', description: 'End of date range, "YYYY-MM-DD". Omit for no upper bound.' },
+          groupBy: { type: 'string', enum: ['severity', 'resolution', 'alertName', 'server'], description: 'If set, returns counts grouped by this field instead of a row listing -- use for "how many X per Y" questions.' },
+        },
+      },
+    },
+  },
+  {
+    type: 'function',
+    function: {
+      name: 'list_servers',
+      description: 'List servers in the inventory filtered by environment, data center, business unit, OS type, critical-watchlist status, or active/inactive. Use this for questions like "which servers are in the DR environment", "list critical servers", "what servers are in data center X" -- not covered by get_server_status (which looks up one specific named server).',
+      parameters: {
+        type: 'object',
+        properties: {
+          environment: { type: 'string', description: 'Exact or partial environment name.' },
+          dataCenter: { type: 'string', description: 'Exact or partial data center.' },
+          businessUnit: { type: 'string', description: 'Exact or partial business unit.' },
+          osType: { type: 'string', description: 'Exact or partial OS type.' },
+          onCriticalWatchlist: { type: 'boolean', description: 'true = only critical-watchlist servers, false = only non-watchlist servers, omit = both.' },
+          active: { type: 'boolean', description: 'true = only active servers, false = only inactive, omit = both (defaults to active-only if omitted, since inactive servers are rarely relevant).' },
         },
       },
     },
   },
 ];
+
+// Fixed field->column mapping for groupBy -- never taken as a raw column
+// name from the model/user, so this can't be turned into SQL injection no
+// matter what a model is prompted to send.
+const GROUP_BY_COLUMNS = {
+  severity: 'a.severity',
+  resolution: 'a.resolution_state_label',
+  alertName: 'a.alert_name',
+  server: `COALESCE(s.hostname, a.server_name_raw)`,
+};
 
 async function getServerStatus({ hostname } = {}) {
   if (!hostname || !hostname.trim()) return { error: 'hostname is required' };
@@ -86,9 +117,22 @@ async function getServerStatus({ hostname } = {}) {
 async function searchAlerts(args = {}) {
   const { where, params, whereSql } = buildAlertFilters({
     server: args.server, alertName: args.alertName, severity: args.severity, resolution: args.resolution,
+    from: args.from, to: args.to,
   });
-  if (!where.length) return { error: 'At least one filter (server, alertName, severity, or resolution) is required.' };
   const JOIN = `FROM alerts a LEFT JOIN servers s ON s.id = a.server_id`;
+
+  if (args.groupBy) {
+    const column = GROUP_BY_COLUMNS[args.groupBy];
+    if (!column) return { error: `Unknown groupBy value: ${args.groupBy}. Use one of: ${Object.keys(GROUP_BY_COLUMNS).join(', ')}.` };
+    const { rows } = await pool.query(
+      `SELECT ${column} AS group_value, COUNT(*)::int AS c ${JOIN} ${whereSql} GROUP BY group_value ORDER BY c DESC LIMIT 25`,
+      params
+    );
+    return { groupedBy: args.groupBy, groups: rows.map((r) => ({ value: r.group_value, count: r.c })) };
+  }
+
+  if (!where.length) return { error: 'At least one filter (server, alertName, severity, resolution, from, or to) is required unless groupBy is set.' };
+
   const [{ rows: countRow }, { rows }] = await Promise.all([
     pool.query(`SELECT COUNT(*)::int AS c ${JOIN} ${whereSql}`, params),
     pool.query(
@@ -105,7 +149,37 @@ async function searchAlerts(args = {}) {
   };
 }
 
-const TOOL_IMPLS = { get_server_status: getServerStatus, search_alerts: searchAlerts };
+async function listServers(args = {}) {
+  const where = [];
+  const params = [];
+  const like = (col, val) => { params.push(`%${val}%`); where.push(`${col} LIKE $${params.length}`); };
+  if (args.environment) like('environment', args.environment);
+  if (args.dataCenter) like('data_center', args.dataCenter);
+  if (args.businessUnit) like('business_unit', args.businessUnit);
+  if (args.osType) like('os_type', args.osType);
+  if (args.onCriticalWatchlist !== undefined) { params.push(args.onCriticalWatchlist ? 1 : 0); where.push(`is_critical = $${params.length}`); }
+  // Defaults to active-only when the caller doesn't specify -- an inactive
+  // (decommissioned) server showing up unasked-for in "which servers are in
+  // X" answers would be misleading more often than it would help.
+  params.push(args.active === false ? 0 : 1);
+  where.push(`active = $${params.length}`);
+
+  const { rows } = await pool.query(
+    `SELECT hostname, fqdn, environment, business_unit, data_center, os_type, is_critical, active
+     FROM servers WHERE ${where.join(' AND ')} ORDER BY hostname LIMIT 100`,
+    params
+  );
+  return {
+    matchCount: rows.length,
+    truncated: rows.length === 100,
+    servers: rows.map((s) => ({
+      hostname: s.hostname, fqdn: s.fqdn, environment: s.environment, businessUnit: s.business_unit,
+      dataCenter: s.data_center, osType: s.os_type, onCriticalWatchlist: !!s.is_critical, active: !!s.active,
+    })),
+  };
+}
+
+const TOOL_IMPLS = { get_server_status: getServerStatus, search_alerts: searchAlerts, list_servers: listServers };
 
 // argsJson is a JSON string for a real OpenAI-shaped tool call (function
 // .arguments is always a string there), but extractTextToolCalls() below

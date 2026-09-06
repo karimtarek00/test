@@ -78,6 +78,14 @@ if (alertsTableExists) {
   }
 }
 
+const usersTableExists = !!db.prepare("SELECT name FROM sqlite_master WHERE type='table' AND name='users'").get();
+if (usersTableExists) {
+  const usersCols = db.prepare('PRAGMA table_info(users)').all().map((c) => c.name);
+  if (!usersCols.includes('last_login_at')) {
+    db.exec('ALTER TABLE users ADD COLUMN last_login_at TEXT');
+  }
+}
+
 // Zero-setup: apply the schema on first run (and no-op on every run after,
 // since every statement in schema.sql is CREATE ... IF NOT EXISTS).
 const schemaPath = path.join(__dirname, '..', '..', 'db', 'schema.sql');

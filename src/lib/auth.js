@@ -124,5 +124,5 @@ function requireAdmin(req, res, next) {
 module.exports = {
   hashPassword, verifyPassword, seedDefaultUsers,
   createSession, setSessionCookie, clearSessionCookie, destroySession,
-  requireAuth, requireAdmin, parseCookies,
+  requireAuth, requireAdmin, parseCookies, COOKIE_NAME,
 };

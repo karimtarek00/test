@@ -60,7 +60,7 @@ export default function UsersPage() {
         <div className="panel">
           <table>
             <thead>
-              <tr><th>Username</th><th>Role</th><th>Created</th><th></th></tr>
+              <tr><th>Username</th><th>Role</th><th>Created</th><th>Last Signed In</th><th></th></tr>
             </thead>
             <tbody>
               {rows.map((u) => (
@@ -68,6 +68,7 @@ export default function UsersPage() {
                   <td>{u.username}</td>
                   <td><span className="pill">{u.role}</span></td>
                   <td className="text-dim">{new Date(u.created_at).toLocaleDateString()}</td>
+                  <td className="text-dim">{u.last_login_at ? new Date(u.last_login_at).toLocaleString() : 'Never'}</td>
                   <td>
                     {u.id !== currentUser.id && (
                       <button className="btn-secondary btn" style={{ padding: '5px 10px', fontSize: 12 }} onClick={() => removeUser(u.id)}>

@@ -12,7 +12,7 @@ const router = express.Router();
 // should ever see or reach.
 
 router.get('/', asyncHandler(async (req, res) => {
-  const { rows } = await pool.query('SELECT id, username, role, created_at FROM users ORDER BY created_at ASC');
+  const { rows } = await pool.query('SELECT id, username, role, created_at, last_login_at FROM users ORDER BY created_at ASC');
   res.json({ users: rows });
 }));
 

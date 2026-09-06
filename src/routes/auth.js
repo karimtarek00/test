@@ -34,12 +34,19 @@ router.post('/login', loginLimiter, asyncHandler(async (req, res) => {
   }
   const { token, expiresAt } = await auth.createSession(user.id);
   auth.setSessionCookie(res, token, expiresAt);
+  await pool.query(`UPDATE users SET last_login_at = strftime('%Y-%m-%dT%H:%M:%fZ','now') WHERE id = $1`, [user.id]);
   log.info({ userId: user.id, username: user.username, role: user.role }, 'login succeeded');
   res.json({ user: { username: user.username, role: user.role } });
 }));
 
 router.post('/logout', asyncHandler(async (req, res) => {
-  const token = auth.parseCookies(req).sid;
+  // Was reading the generic 'sid' key here -- a leftover from before the
+  // session cookie was renamed to server_watch_sid (to stop colliding with
+  // other apps on the same host). Logout still cleared the browser's
+  // cookie either way, but never actually looked up/deleted the right
+  // session server-side, leaving it live in the sessions table until it
+  // naturally expired 7 days later.
+  const token = auth.parseCookies(req)[auth.COOKIE_NAME];
   await auth.destroySession(token);
   auth.clearSessionCookie(res);
   res.json({ ok: true });

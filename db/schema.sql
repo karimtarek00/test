@@ -195,7 +195,8 @@ CREATE TABLE IF NOT EXISTS users (
   username        TEXT UNIQUE NOT NULL,
   password_hash   TEXT NOT NULL,
   role            TEXT NOT NULL CHECK (role IN ('admin','viewer')),
-  created_at      TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))
+  created_at      TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now')),
+  last_login_at   TEXT
 );
 
 CREATE TABLE IF NOT EXISTS sessions (
