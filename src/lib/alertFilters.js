@@ -12,7 +12,10 @@
 const { endOfDay } = require('./db');
 
 function buildAlertFilters(query) {
-  const { severity = '', resolution = '', serverId = '', server = '', alertName = '', q = '', from = '', to = '' } = query;
+  const {
+    severity = '', resolution = '', serverId = '', server = '', alertName = '', q = '', from = '', to = '',
+    environment = '', dataCenter = '', businessUnit = '',
+  } = query;
   const where = [];
   const params = [];
 
@@ -25,6 +28,12 @@ function buildAlertFilters(query) {
   if (q) { params.push(`%${q}%`, `%${q}%`); where.push(`(a.alert_name LIKE $${params.length - 1} OR a.server_name_raw LIKE $${params.length})`); }
   if (from) { params.push(from); where.push(`a.created_at >= $${params.length}`); }
   if (to) { params.push(endOfDay(to)); where.push(`a.created_at <= $${params.length}`); }
+  // Joins through the servers table -- an alert with no matched server row
+  // (server_id NULL) can never match any of these, same as it can't match
+  // a `server` filter above.
+  if (environment) { params.push(`%${environment}%`); where.push(`s.environment LIKE $${params.length}`); }
+  if (dataCenter) { params.push(`%${dataCenter}%`); where.push(`s.data_center LIKE $${params.length}`); }
+  if (businessUnit) { params.push(`%${businessUnit}%`); where.push(`s.business_unit LIKE $${params.length}`); }
 
   return { where, params, whereSql: where.length ? `WHERE ${where.join(' AND ')}` : '' };
 }

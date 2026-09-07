@@ -3,9 +3,9 @@ import { api } from '../api/client.js';
 import TopBar from '../components/TopBar.jsx';
 
 const REPORT_TYPES = [
-  { value: 'inventory', label: 'Server Inventory', description: 'Point-in-time listing of every monitored server -- no date range needed.', ranged: false },
-  { value: 'alerts', label: 'Alerts', description: 'Every alert that occurred in the selected range, filterable by server/type/severity. Includes alerts since resolved or closed -- a ranged report always reflects what genuinely happened in the window, not just what is still open today.', ranged: true },
-  { value: 'summary', label: 'Summary', description: 'A dashboard-style report: KPI cards, severity/resolution-state donut charts, a monthly trend chart, ranked alarm-type/device bars, and a least-healthy-devices table. PDF shows the full visual layout; Word/Excel export the same data as tables.', ranged: true },
+  { value: 'inventory', label: 'Server Inventory', description: 'KPI cards, environment/OS-type donut charts, and a data-center breakdown, followed by the full server listing. Point-in-time -- no date range needed.', ranged: false },
+  { value: 'alerts', label: 'Alerts', description: 'KPI cards, severity/resolution donut charts, and a monthly trend chart, followed by the full row-by-row listing for the selected range -- filterable by server/type/severity. Includes alerts since resolved or closed -- a ranged report always reflects what genuinely happened in the window, not just what is still open today.', ranged: true },
+  { value: 'summary', label: 'Summary', description: 'A dashboard-style report: KPI cards, severity/resolution-state donut charts, a monthly trend chart, ranked alarm-type/device bars, and a least-healthy-devices table. Filter to one device for a per-server summary. PDF shows the full visual layout; Word/Excel export the same data as tables.', ranged: true },
 ];
 const FORMATS = [
   { value: 'pdf', label: 'PDF' },
@@ -80,14 +80,14 @@ export default function ReportsPage() {
             <div className="toolbar" style={{ flexWrap: 'wrap', marginBottom: 16 }}>
               <input className="input" type="date" style={{ width: 150 }} value={filters.from} onChange={set('from')} title="From (local date)" />
               <input className="input" type="date" style={{ width: 150 }} value={filters.to} onChange={set('to')} title="To (local date)" />
+              {(reportType === 'alerts' || reportType === 'summary') && (
+                <input className="input" style={{ width: 200 }} placeholder="Filter to one device…" value={filters.server} onChange={set('server')} />
+              )}
               {reportType === 'alerts' && (
-                <>
-                  <input className="input" style={{ width: 200 }} placeholder="Search server name…" value={filters.server} onChange={set('server')} />
-                  <select className="input" style={{ width: 240 }} value={filters.alertName} onChange={set('alertName')}>
-                    <option value="">All alarm types</option>
-                    {alertTypes.map((n) => <option key={n} value={n}>{n}</option>)}
-                  </select>
-                </>
+                <select className="input" style={{ width: 240 }} value={filters.alertName} onChange={set('alertName')}>
+                  <option value="">All alarm types</option>
+                  {alertTypes.map((n) => <option key={n} value={n}>{n}</option>)}
+                </select>
               )}
               <select className="input" style={{ width: 160 }} value={filters.severity} onChange={set('severity')}>
                 <option value="">All severities</option>

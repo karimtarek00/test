@@ -14,6 +14,7 @@
 // doesn't support this at all.
 const { pool } = require('./db');
 const { buildAlertFilters } = require('./alertFilters');
+const { computeHealthScores } = require('./healthScore');
 
 const TOOLS = [
   {
@@ -34,7 +35,7 @@ const TOOLS = [
     type: 'function',
     function: {
       name: 'search_alerts',
-      description: 'Search alerts by any combination of server, alert name/type, severity, resolution state (open/closed), and date range. Returns matching rows by default, or grouped counts (e.g. "how many alerts per severity") when groupBy is set. Use this for any question about specific alerts/alarms that the data snapshot\'s top-5 lists don\'t already answer -- e.g. "how many Warning alerts are on server X", "is there an alert called Y anywhere", "list open alerts for server Z", "how many alerts happened last week", "break down alerts by severity for server X".',
+      description: 'Search alerts by any combination of server, alert name/type, severity, resolution state (open/closed), date range, environment, data center, or business unit. Returns matching rows by default, or grouped counts (e.g. "how many alerts per severity", "alerts by environment") when groupBy is set. Use this for any question about specific alerts/alarms that the data snapshot\'s top-5 lists don\'t already answer -- e.g. "how many Warning alerts are on server X", "how many alerts in Production", "is there an alert called Y anywhere", "list open alerts for server Z", "how many alerts happened last week", "break down alerts by severity for server X", "which business unit has the most critical alerts", "alerts in the DR data center".',
       parameters: {
         type: 'object',
         properties: {
@@ -44,7 +45,28 @@ const TOOLS = [
           resolution: { type: 'string', enum: ['open', 'closed'], description: 'Filter to only open or only closed alerts. Omit to include both.' },
           from: { type: 'string', description: 'Start of date range, "YYYY-MM-DD". Omit for no lower bound.' },
           to: { type: 'string', description: 'End of date range, "YYYY-MM-DD". Omit for no upper bound.' },
-          groupBy: { type: 'string', enum: ['severity', 'resolution', 'alertName', 'server'], description: 'If set, returns counts grouped by this field instead of a row listing -- use for "how many X per Y" questions.' },
+          environment: { type: 'string', description: 'Exact or partial environment name (e.g. "Production", "DR"). Matches via the alert\'s server.' },
+          dataCenter: { type: 'string', description: 'Exact or partial data center. Matches via the alert\'s server.' },
+          businessUnit: { type: 'string', description: 'Exact or partial business unit. Matches via the alert\'s server.' },
+          groupBy: {
+            type: 'string',
+            enum: ['severity', 'resolution', 'alertName', 'server', 'environment', 'dataCenter', 'businessUnit'],
+            description: 'If set, returns counts grouped by this field instead of a row listing -- use for "how many X per Y" questions.',
+          },
+        },
+      },
+    },
+  },
+  {
+    type: 'function',
+    function: {
+      name: 'get_health_rankings',
+      description: 'Rank active servers by health score (0-100, LOWER is WORSE -- more alert volume/severity/repetition). Use this for "which servers are unhealthy", "worst health score", "healthiest servers", "top N servers needing attention" -- not covered by the snapshot\'s fixed top-5 worst list when a different count or the BEST servers are asked for.',
+      parameters: {
+        type: 'object',
+        properties: {
+          direction: { type: 'string', enum: ['worst', 'best'], description: 'worst = lowest health scores first (default), best = highest first.' },
+          limit: { type: 'integer', description: 'How many servers to return. Default 10, max 50.' },
         },
       },
     },
@@ -77,6 +99,9 @@ const GROUP_BY_COLUMNS = {
   resolution: 'a.resolution_state_label',
   alertName: 'a.alert_name',
   server: `COALESCE(s.hostname, a.server_name_raw)`,
+  environment: `COALESCE(s.environment, 'Unspecified')`,
+  dataCenter: `COALESCE(s.data_center, 'Unspecified')`,
+  businessUnit: `COALESCE(s.business_unit, 'Unspecified')`,
 };
 
 async function getServerStatus({ hostname } = {}) {
@@ -88,6 +113,7 @@ async function getServerStatus({ hostname } = {}) {
   );
   if (!servers.length) return { found: false, message: `No server matching "${hostname}" found in inventory.` };
 
+  const health = await computeHealthScores();
   const matches = [];
   for (const s of servers) {
     const [{ rows: openAlerts }, { rows: totalRow }] = await Promise.all([
@@ -98,6 +124,7 @@ async function getServerStatus({ hostname } = {}) {
       ),
       pool.query(`SELECT COUNT(*)::int AS c FROM alerts WHERE server_id = $1`, [s.id]),
     ]);
+    const serverHealth = health.find((h) => h.serverId === s.id) || null;
     matches.push({
       hostname: s.hostname,
       fqdn: s.fqdn,
@@ -106,6 +133,10 @@ async function getServerStatus({ hostname } = {}) {
       dataCenter: s.data_center,
       onCriticalWatchlist: !!s.is_critical,
       active: !!s.active,
+      // null (not 0) when inactive -- computeHealthScores only scores
+      // active servers, and 0 would misread as "worst possible health"
+      // rather than "not scored."
+      healthScore: serverHealth ? serverHealth.healthScore : null,
       openAlertCount: openAlerts.length,
       allTimeAlertCount: totalRow[0].c,
       openAlerts: openAlerts.map((a) => ({ name: a.alert_name, severity: a.severity, state: a.resolution_state_label, raisedAt: a.created_at })),
@@ -114,10 +145,31 @@ async function getServerStatus({ hostname } = {}) {
   return { found: true, matchCount: matches.length, matches };
 }
 
+async function getHealthRankings(args = {}) {
+  const direction = args.direction === 'best' ? 'best' : 'worst';
+  const limit = clampInt(args.limit, 10, 1, 50);
+  const health = await computeHealthScores();
+  const sorted = [...health].sort((a, b) => (direction === 'worst' ? a.healthScore - b.healthScore : b.healthScore - a.healthScore));
+  return {
+    direction,
+    servers: sorted.slice(0, limit).map((h) => ({
+      hostname: h.hostname, healthScore: h.healthScore, openAlarmCount: h.alarmCount,
+      distinctAlertTypes: h.distinctTypes, distinctActiveDays: h.distinctDays,
+    })),
+  };
+}
+
+function clampInt(value, fallback, min, max) {
+  const n = parseInt(value, 10);
+  if (!Number.isFinite(n)) return fallback;
+  return Math.max(min, Math.min(max, n));
+}
+
 async function searchAlerts(args = {}) {
   const { where, params, whereSql } = buildAlertFilters({
     server: args.server, alertName: args.alertName, severity: args.severity, resolution: args.resolution,
     from: args.from, to: args.to,
+    environment: args.environment, dataCenter: args.dataCenter, businessUnit: args.businessUnit,
   });
   const JOIN = `FROM alerts a LEFT JOIN servers s ON s.id = a.server_id`;
 
@@ -131,7 +183,7 @@ async function searchAlerts(args = {}) {
     return { groupedBy: args.groupBy, groups: rows.map((r) => ({ value: r.group_value, count: r.c })) };
   }
 
-  if (!where.length) return { error: 'At least one filter (server, alertName, severity, resolution, from, or to) is required unless groupBy is set.' };
+  if (!where.length) return { error: 'At least one filter (server, alertName, severity, resolution, from, to, environment, dataCenter, or businessUnit) is required unless groupBy is set.' };
 
   const [{ rows: countRow }, { rows }] = await Promise.all([
     pool.query(`SELECT COUNT(*)::int AS c ${JOIN} ${whereSql}`, params),
@@ -183,7 +235,10 @@ async function listServers(args = {}) {
   };
 }
 
-const TOOL_IMPLS = { get_server_status: getServerStatus, search_alerts: searchAlerts, list_servers: listServers };
+const TOOL_IMPLS = {
+  get_server_status: getServerStatus, search_alerts: searchAlerts, list_servers: listServers,
+  get_health_rankings: getHealthRankings,
+};
 
 // argsJson is a JSON string for a real OpenAI-shaped tool call (function
 // .arguments is always a string there), but extractTextToolCalls() below

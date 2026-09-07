@@ -33,6 +33,18 @@ router.get('/', asyncHandler(async (req, res) => {
   const countRes = await pool.query(`SELECT COUNT(*)::int AS total FROM servers s ${whereSql}`, params);
   const total = countRes.rows[0].total;
 
+  // "Devices affected" -- how many of the servers matching the current
+  // filters have at least one open alert right now, not the page's row
+  // count (which is capped by pageSize and would misrepresent this for
+  // any inventory bigger than one page).
+  const affectedRes = await pool.query(
+    `SELECT COUNT(*)::int AS c FROM servers s
+     WHERE s.id IN (SELECT DISTINCT server_id FROM alerts WHERE resolution_state_label != 'Closed' AND server_id IS NOT NULL)
+     ${whereSql ? `AND ${where.join(' AND ')}` : ''}`,
+    params
+  );
+  const devicesAffected = affectedRes.rows[0].c;
+
   params.push(limit, offset);
   const { rows } = await pool.query(`
     WITH paged AS (
@@ -47,7 +59,7 @@ router.get('/', asyncHandler(async (req, res) => {
     ORDER BY ${sortCol} ${sortDir}
   `, params);
 
-  res.json({ total, page: Number(page), pageSize: limit, servers: rows });
+  res.json({ total, devicesAffected, page: Number(page), pageSize: limit, servers: rows });
 }));
 
 // GET /api/servers/:id

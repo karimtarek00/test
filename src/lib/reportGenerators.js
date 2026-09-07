@@ -67,54 +67,130 @@ function rangedAlertsWhere({ from, to, severity, server, alertName } = {}) {
   return { whereSql: where.length ? `WHERE ${where.join(' AND ')}` : '', values };
 }
 
+// Buckets every distinct value of a breakdown into the top N plus a
+// combined "Other" slice -- a donut with 30 razor-thin slices (one per
+// data center, say) is unreadable, and a legend that long would run off
+// the page. Shared by inventory's environment/OS donuts and any other
+// wide categorical breakdown a report needs to chart.
+function topNPlusOther(rows, n, colors) {
+  const top = rows.slice(0, n);
+  const rest = rows.slice(n);
+  const slices = top.map((r, i) => ({ label: r.label, value: r.c, color: colors[i % colors.length] }));
+  const otherTotal = rest.reduce((sum, r) => sum + r.c, 0);
+  if (otherTotal > 0) slices.push({ label: 'Other', value: otherTotal, color: '#8899aa' });
+  return slices;
+}
+const CATEGORICAL_COLORS = ['#2684ff', '#7c3aed', '#00c896', '#ffb020', '#ff4d4f', '#22c1c3'];
+
 async function buildInventoryModel() {
-  const { rows } = await pool.query(`
-    SELECT hostname, fqdn, os_type, environment, business_unit, data_center,
-           is_critical, active, source, notes, created_at
-    FROM servers ORDER BY hostname ASC
-  `);
+  const [{ rows }, totalsRow, envRows, osRows, dcRows] = await Promise.all([
+    pool.query(`
+      SELECT hostname, fqdn, os_type, environment, business_unit, data_center,
+             is_critical, active, source, notes, created_at
+      FROM servers ORDER BY hostname ASC
+    `),
+    pool.query(`
+      SELECT COUNT(*)::int AS total,
+             SUM(CASE WHEN active = 1 THEN 1 ELSE 0 END)::int AS active_count,
+             SUM(CASE WHEN active = 0 THEN 1 ELSE 0 END)::int AS inactive_count,
+             SUM(CASE WHEN is_critical = 1 THEN 1 ELSE 0 END)::int AS critical_count,
+             COUNT(DISTINCT environment)::int AS distinct_environments,
+             COUNT(DISTINCT data_center)::int AS distinct_data_centers
+      FROM servers
+    `),
+    pool.query(`SELECT COALESCE(environment, 'Unspecified') AS label, COUNT(*)::int AS c FROM servers GROUP BY label ORDER BY c DESC`),
+    pool.query(`SELECT COALESCE(os_type, 'Unspecified') AS label, COUNT(*)::int AS c FROM servers GROUP BY label ORDER BY c DESC`),
+    pool.query(`SELECT COALESCE(data_center, 'Unspecified') AS label, COUNT(*)::int AS c FROM servers GROUP BY label ORDER BY c DESC LIMIT 10`),
+  ]);
+  const t = totalsRow.rows[0];
+
   return {
     reportType: 'inventory',
     title: 'Server Inventory',
     subtitle: `Point-in-time listing of all monitored servers (${rows.length})`,
     generatedAtLocal: formatLocal(new Date().toISOString()),
-    sections: [{
-      type: 'table',
-      title: 'Servers',
-      columns: ['Hostname', 'FQDN', 'OS Type', 'Environment', 'Business Unit', 'Data Center', 'Critical', 'Active', 'Source', 'Added On', 'Notes'],
-      rows: rows.map((r) => [
-        r.hostname, r.fqdn || '', r.os_type || '', r.environment || '', r.business_unit || '',
-        r.data_center || '', r.is_critical ? 'Yes' : 'No', r.active ? 'Yes' : 'No', r.source,
-        formatLocal(r.created_at), r.notes || '',
-      ]),
-    }],
+    sections: [
+      {
+        type: 'kpiCards',
+        title: 'Overview',
+        cards: [
+          { label: 'Total Servers', value: String(t.total) },
+          { label: 'Active', value: String(t.active_count) },
+          { label: 'Inactive', value: String(t.inactive_count) },
+          { label: 'Critical Watchlist', value: String(t.critical_count) },
+          { label: 'Environments', value: String(t.distinct_environments) },
+          { label: 'Data Centers', value: String(t.distinct_data_centers) },
+        ],
+      },
+      { type: 'donut', title: 'By Environment', slices: topNPlusOther(envRows.rows, 5, CATEGORICAL_COLORS) },
+      { type: 'donut', title: 'By OS Type', slices: topNPlusOther(osRows.rows, 5, CATEGORICAL_COLORS) },
+      { type: 'rankedBars', title: 'Servers by Data Center', items: dcRows.rows.map((r) => ({ label: r.label, value: r.c })), color: `#${BRAND_HEX}` },
+      {
+        type: 'table',
+        title: 'Servers',
+        columns: ['Hostname', 'FQDN', 'OS Type', 'Environment', 'Business Unit', 'Data Center', 'Critical', 'Active', 'Source', 'Added On', 'Notes'],
+        rows: rows.map((r) => [
+          r.hostname, r.fqdn || '', r.os_type || '', r.environment || '', r.business_unit || '',
+          r.data_center || '', r.is_critical ? 'Yes' : 'No', r.active ? 'Yes' : 'No', r.source,
+          formatLocal(r.created_at), r.notes || '',
+        ]),
+      },
+    ],
   };
 }
 
 async function buildAlertsModel(params = {}) {
   const { whereSql, values } = rangedAlertsWhere(params);
-  const { rows } = await pool.query(`
-    SELECT a.alert_name, COALESCE(s.hostname, a.server_name_raw) AS server, a.severity,
-           a.resolution_state_label, a.priority, a.repeat_count, a.source,
-           a.created_at, a.resolved_at
-    FROM alerts a LEFT JOIN servers s ON s.id = a.server_id
-    ${whereSql}
-    ORDER BY a.created_at DESC
-  `, values);
+  const JOIN = `FROM alerts a LEFT JOIN servers s ON s.id = a.server_id`;
+  const [{ rows }, severityRows, resolutionRows, monthlyRows] = await Promise.all([
+    pool.query(`
+      SELECT a.alert_name, COALESCE(s.hostname, a.server_name_raw) AS server, a.severity,
+             a.resolution_state_label, a.priority, a.repeat_count, a.source,
+             a.created_at, a.resolved_at
+      ${JOIN} ${whereSql}
+      ORDER BY a.created_at DESC
+    `, values),
+    pool.query(`SELECT a.severity AS severity, COUNT(*)::int AS c ${JOIN} ${whereSql} GROUP BY a.severity ORDER BY c DESC`, values),
+    pool.query(`SELECT a.resolution_state_label AS label, COUNT(*)::int AS c ${JOIN} ${whereSql} GROUP BY label ORDER BY c DESC`, values),
+    pool.query(`SELECT ${sqlLocalMonth('a.created_at')} AS month, COUNT(*)::int AS c ${JOIN} ${whereSql} GROUP BY month ORDER BY month ASC`, values),
+  ]);
+  const criticalCount = severityRows.rows.find((r) => r.severity === 'Critical')?.c || 0;
+  const warningCount = severityRows.rows.find((r) => r.severity === 'Warning')?.c || 0;
+  const infoCount = severityRows.rows.find((r) => r.severity === 'Information')?.c || 0;
+  const openCount = resolutionRows.rows.filter((r) => r.label !== 'Closed').reduce((s, r) => s + r.c, 0);
+  const closedCount = resolutionRows.rows.find((r) => r.label === 'Closed')?.c || 0;
+
   return {
     reportType: 'alerts',
     title: 'Alerts Report',
-    subtitle: describeRange(params.from, params.to),
+    subtitle: describeRange(params.from, params.to) + (params.server ? ` — server: ${params.server}` : ''),
     generatedAtLocal: formatLocal(new Date().toISOString()),
-    sections: [{
-      type: 'table',
-      title: `Alerts (${rows.length})`,
-      columns: ['Alert Name', 'Server', 'Severity', 'Resolution State', 'Priority', 'Repeat Count', 'Source Detail', 'Created At', 'Resolved At'],
-      rows: rows.map((r) => [
-        r.alert_name, r.server, r.severity, r.resolution_state_label, r.priority || '',
-        r.repeat_count ?? '', r.source || '', formatLocal(r.created_at), formatLocal(r.resolved_at),
-      ]),
-    }],
+    sections: [
+      {
+        type: 'kpiCards',
+        title: 'Overview',
+        cards: [
+          { label: 'Total Alerts', value: String(rows.length) },
+          { label: 'Critical', value: String(criticalCount) },
+          { label: 'Warning', value: String(warningCount) },
+          { label: 'Information', value: String(infoCount) },
+          { label: 'Open', value: String(openCount) },
+          { label: 'Closed', value: String(closedCount) },
+        ],
+      },
+      { type: 'donut', title: 'Severity Breakdown', slices: severityRows.rows.map((r) => ({ label: r.severity, value: r.c, color: colorForSeverity(r.severity) })) },
+      { type: 'donut', title: 'Resolution State Breakdown', slices: resolutionRows.rows.map((r, i) => ({ label: r.label, value: r.c, color: colorForResolution(r.label, i) })) },
+      { type: 'monthlyBars', title: 'Monthly Trend (local calendar month)', labels: monthlyRows.rows.map((r) => r.month), values: monthlyRows.rows.map((r) => r.c) },
+      {
+        type: 'table',
+        title: `Alerts (${rows.length})`,
+        columns: ['Alert Name', 'Server', 'Severity', 'Resolution State', 'Priority', 'Repeat Count', 'Source Detail', 'Created At', 'Resolved At'],
+        rows: rows.map((r) => [
+          r.alert_name, r.server, r.severity, r.resolution_state_label, r.priority || '',
+          r.repeat_count ?? '', r.source || '', formatLocal(r.created_at), formatLocal(r.resolved_at),
+        ]),
+      },
+    ],
   };
 }
 
@@ -161,7 +237,7 @@ async function buildSummaryModel(params = {}) {
 
   return {
     reportType: 'summary',
-    title: 'Alert Summary Report',
+    title: params.server ? `Alert Summary Report — ${params.server}` : 'Alert Summary Report',
     subtitle: describeRange(params.from, params.to),
     generatedAtLocal: formatLocal(new Date().toISOString()),
     sections: [
@@ -169,7 +245,10 @@ async function buildSummaryModel(params = {}) {
         type: 'kpiCards',
         title: 'Overview',
         cards: [
-          { label: 'Devices Monitored', value: String(devicesMonitoredRow.rows[0].c) },
+          // The fleet-wide count is misleading on a report already scoped to
+          // one device via the server filter -- show that it's filtered
+          // instead of implying the other ~75 servers are somehow in scope.
+          { label: 'Devices Monitored', value: params.server ? '1 (filtered)' : String(devicesMonitoredRow.rows[0].c) },
           { label: 'Total Alarms', value: String(totalAlerts) },
           { label: 'Devices Affected', value: String(devicesAffectedRow.rows[0].c) },
           { label: 'Critical Alarms', value: String(criticalCount) },

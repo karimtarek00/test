@@ -88,7 +88,7 @@ export default function AnalysisPage() {
             </div>
 
             <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 16 }}>
-              <RankedListPanel title="Top Alarm Types" rows={summary.topAlarmTypes} max={maxTypeCount} />
+              <RankedListPanel title="Top Alarm Types" rows={summary.topAlarmTypes} max={maxTypeCount} wrapLabels />
               <RankedListPanel title="Top Devices by Volume" rows={summary.topDevices} max={maxDeviceCount} />
             </div>
 
@@ -195,7 +195,7 @@ function KpiCard({ label, value, sub, tone, small }) {
   );
 }
 
-function RankedListPanel({ title, rows, max }) {
+function RankedListPanel({ title, rows, max, wrapLabels = false }) {
   return (
     <div className="panel">
       <div className="panel-header"><span className="panel-title">{title}</span></div>
@@ -203,12 +203,26 @@ function RankedListPanel({ title, rows, max }) {
         <div className="empty-state">No data for these filters.</div>
       ) : (
         rows.map((row) => (
-          <div key={row.name} style={{ display: 'flex', alignItems: 'center', gap: 12, marginBottom: 9 }}>
-            <div style={{ width: 220, fontSize: 12.5, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }} title={row.name}>{row.name}</div>
-            <div style={{ flex: 1, background: 'var(--bg-elevated)', borderRadius: 6, height: 9, overflow: 'hidden' }}>
-              <div style={{ width: `${(row.count / max) * 100}%`, height: '100%', background: 'var(--info)' }} />
+          <div
+            key={row.name}
+            style={wrapLabels
+              ? { display: 'flex', flexDirection: 'column', gap: 4, marginBottom: 12 }
+              : { display: 'flex', alignItems: 'center', gap: 12, marginBottom: 9 }}
+          >
+            <div
+              style={wrapLabels
+                ? { fontSize: 12.5, whiteSpace: 'normal', wordBreak: 'break-word' }
+                : { width: 220, fontSize: 12.5, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}
+              title={wrapLabels ? undefined : row.name}
+            >
+              {row.name}
             </div>
-            <div style={{ width: 50, textAlign: 'right', fontSize: 12.5, fontWeight: 700 }}>{row.count}</div>
+            <div style={{ display: 'flex', alignItems: 'center', gap: 12 }}>
+              <div style={{ flex: 1, background: 'var(--bg-elevated)', borderRadius: 6, height: 9, overflow: 'hidden' }}>
+                <div style={{ width: `${(row.count / max) * 100}%`, height: '100%', background: 'var(--info)' }} />
+              </div>
+              <div style={{ width: 50, textAlign: 'right', fontSize: 12.5, fontWeight: 700 }}>{row.count}</div>
+            </div>
           </div>
         ))
       )}
