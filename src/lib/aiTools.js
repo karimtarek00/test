@@ -136,7 +136,8 @@ async function searchAlerts(args = {}) {
   const [{ rows: countRow }, { rows }] = await Promise.all([
     pool.query(`SELECT COUNT(*)::int AS c ${JOIN} ${whereSql}`, params),
     pool.query(
-      `SELECT a.alert_name, COALESCE(s.hostname, a.server_name_raw) AS server, a.severity, a.resolution_state_label, a.created_at
+      `SELECT a.alert_name, COALESCE(s.hostname, a.server_name_raw) AS server, a.severity, a.resolution_state_label,
+              a.priority, a.repeat_count, a.created_at, a.resolved_at
        ${JOIN} ${whereSql} ORDER BY a.created_at DESC LIMIT 20`,
       params
     ),
@@ -145,7 +146,10 @@ async function searchAlerts(args = {}) {
     totalMatching: countRow[0].c,
     shownCount: rows.length,
     note: rows.length < countRow[0].c ? `Showing the ${rows.length} most recent of ${countRow[0].c} total matches.` : undefined,
-    alerts: rows.map((r) => ({ name: r.alert_name, server: r.server, severity: r.severity, state: r.resolution_state_label, raisedAt: r.created_at })),
+    alerts: rows.map((r) => ({
+      name: r.alert_name, server: r.server, severity: r.severity, state: r.resolution_state_label,
+      priority: r.priority || null, repeatCount: r.repeat_count ?? null, raisedAt: r.created_at, resolvedAt: r.resolved_at || null,
+    })),
   };
 }
 
