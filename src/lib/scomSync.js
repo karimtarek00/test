@@ -58,9 +58,10 @@ let lastResult = null;
 // updated, closed} sync result) so the two outcomes can never render as
 // each other's fields in the UI.
 let lastRecalculateResult = null;
+let lastRecalculateServerNamesResult = null;
 
 function getRunStatus() {
-  return { running: syncing, progress: syncing ? currentProgress : null, lastResult, lastRecalculateResult };
+  return { running: syncing, progress: syncing ? currentProgress : null, lastResult, lastRecalculateResult, lastRecalculateServerNamesResult };
 }
 
 function requestStop() {
@@ -523,6 +524,121 @@ async function fetchAllRawAlerts(settingsOverride) {
   return items;
 }
 
+// Fetches specific alerts BY ID -- unlike fetchOpenAlerts (which always
+// filters `ResolutionState < 255`), Get-SCOMAlert's -Id parameter has no
+// such filter, so this is the only way to re-resolve an alert that's
+// already Closed: SCOM keeps a closed alert in its operational database
+// for a while (until the Data Warehouse grooming job eventually purges
+// it), so it's usually still fetchable this way even though it dropped out
+// of every "open alerts" query already. Ids not found any more (already
+// groomed away) are simply absent from the returned array -- callers must
+// check for that rather than assume a 1:1 result per id requested.
+async function fetchAlertsByIds(settings, scomAlertIds) {
+  if (!scomAlertIds.length) return [];
+  const idsLiteral = `@(${scomAlertIds.map(psStringLiteral).join(',')})`;
+  const inner = `
+Import-Module OperationsManager -ErrorAction Stop
+$ids = ${idsLiteral}
+$alerts = @(Get-SCOMAlert -Id $ids -ErrorAction SilentlyContinue |
+  ${ALERT_SELECT_PROPERTIES})
+ConvertTo-Json -InputObject $alerts -Depth 5 -Compress
+`.trim();
+  const script = buildRemoteScript(settings.management_server, settings.winrm_username, inner);
+
+  const stdout = await runPowerShell(script, { SCOM_WINRM_PASSWORD: settings.winrm_password });
+  const trimmed = stdout.trim();
+  const parsed = trimmed ? JSON.parse(trimmed) : [];
+  const rows = Array.isArray(parsed) ? parsed : [parsed];
+  const adjustmentMinutes = settings.timestamp_adjustment_minutes || 0;
+  return rows.map((row) => mapAlertRow(row, adjustmentMinutes));
+}
+
+// One-time backfill for alerts that are already Closed and stuck with a
+// hostname computed by an older, since-fixed version of mapAlertRow's
+// resolution logic -- a normal sync (even a full one) can never touch
+// these, because fetchOpenAlerts always filters `ResolutionState < 255`
+// and a closed alert permanently fails that filter. Only closed,
+// sync-origin alerts are considered: an open alert already gets fresh
+// resolution on every full sync, so re-checking it here would just be
+// redundant work. Batched by id (BATCH_SIZE) both to keep each
+// Invoke-Command call's PowerShell command-line length sane and to report
+// incremental progress for what can be a slow, multi-thousand-alert run.
+const RECALCULATE_SERVER_NAMES_BATCH_SIZE = 250;
+
+async function recalculateServerNames() {
+  if (syncing) return { ok: false, skipped: true, error: 'A sync is already in progress -- wait for it to finish and try again.' };
+  syncing = true;
+  currentProgress = { startedAt: Date.now(), mode: 'recalculate-servers' };
+  try {
+    const settings = await getSettings();
+    assertCredentialsPresent(settings);
+
+    const { rows: closedAlerts } = await pool.query(
+      `SELECT id, scom_alert_id FROM alerts WHERE origin='sync' AND resolution_state_label='Closed' AND scom_alert_id IS NOT NULL`
+    );
+
+    let checked = 0, corrected = 0, notFoundInScom = 0;
+    for (let i = 0; i < closedAlerts.length; i += RECALCULATE_SERVER_NAMES_BATCH_SIZE) {
+      const batch = closedAlerts.slice(i, i + RECALCULATE_SERVER_NAMES_BATCH_SIZE);
+      const rowIdByGuid = new Map(batch.map((r) => [r.scom_alert_id, r.id]));
+      const resolvedItems = await fetchAlertsByIds(settings, batch.map((r) => r.scom_alert_id));
+      notFoundInScom += batch.length - resolvedItems.length;
+
+      await withWriteLock(async () => {
+        const client = await pool.connect();
+        try {
+          await client.query('BEGIN');
+          for (const a of resolvedItems) {
+            checked++;
+            const rowId = rowIdByGuid.get(a.scomAlertId);
+            const { rows: currentRows } = await client.query('SELECT server_name_raw FROM alerts WHERE id=$1', [rowId]);
+            if (!currentRows[0] || currentRows[0].server_name_raw === a.hostname) continue;
+
+            let serverId = null;
+            if (a.hostname !== 'Unknown') {
+              const key = normalizeServerName(a.hostname);
+              const existingServer = await client.query('SELECT id FROM servers WHERE normalized_key=$1', [key]);
+              if (existingServer.rows.length) {
+                serverId = existingServer.rows[0].id;
+              } else {
+                const createdServer = await client.query(
+                  `INSERT INTO servers (hostname, normalized_key, source) VALUES ($1,$2,'sync') RETURNING id`,
+                  [a.hostname, key]
+                );
+                serverId = createdServer.rows[0].id;
+              }
+            }
+            await client.query('UPDATE alerts SET server_id=$1, server_name_raw=$2 WHERE id=$3', [serverId, a.hostname, rowId]);
+            corrected++;
+          }
+          await client.query('COMMIT');
+        } catch (err) {
+          await client.query('ROLLBACK');
+          throw err;
+        } finally {
+          client.release();
+        }
+      });
+
+      currentProgress.processed = Math.min(i + RECALCULATE_SERVER_NAMES_BATCH_SIZE, closedAlerts.length);
+      currentProgress.total = closedAlerts.length;
+      await yieldToEventLoop();
+    }
+
+    if (corrected > 0) invalidateHealthScoreCache();
+    const result = { ok: true, totalClosedAlerts: closedAlerts.length, checked, corrected, notFoundInScom, at: new Date().toISOString() };
+    log.info(result, 'one-time server-name recalculation completed');
+    lastRecalculateServerNamesResult = result;
+    return result;
+  } catch (err) {
+    lastRecalculateServerNamesResult = { ok: false, error: err.message, at: new Date().toISOString() };
+    throw err;
+  } finally {
+    syncing = false;
+    currentProgress = null;
+  }
+}
+
 async function runOnce(options = {}) {
   const mode = options.mode === 'incremental' ? 'incremental' : 'full';
   if (syncing) return { ok: false, skipped: true, error: 'A sync is already in progress -- wait for it to finish and try again.' };
@@ -808,5 +924,5 @@ module.exports = {
   startAutoFetch, stopAutoFetch, isAutoFetchRunning, resumeAutoFetchIfEnabled,
   isFullSyncScheduled, resumeFullSync, getFullSyncScheduleInfo,
   incrementalCutoff, INCREMENTAL_LOOKBACK_BUFFER_MS,
-  fetchRawAlertSample, fetchAllRawAlerts, recalculateTimestamps,
+  fetchRawAlertSample, fetchAllRawAlerts, recalculateTimestamps, recalculateServerNames,
 };

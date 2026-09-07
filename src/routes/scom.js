@@ -94,6 +94,23 @@ router.post('/recalculate-timestamps', (req, res) => {
   res.json({ ok: true, started: true });
 });
 
+// One-time historical correction for alerts that are already Closed and
+// stuck with a server name computed by an older, since-fixed hostname
+// resolution rule -- a normal sync (even a full one) can never touch these,
+// because it only ever re-fetches SCOM's current OPEN alert list. This
+// re-queries SCOM directly by alert ID (which has no open/closed filter)
+// for just the closed, sync-origin alerts, so it can reach what a normal
+// sync structurally cannot. Same fire-and-forget + poll-status shape as
+// /run and /recalculate-timestamps.
+router.post('/recalculate-server-names', (req, res) => {
+  const status = scomSync.getRunStatus();
+  if (status.running) {
+    return res.json({ ok: false, skipped: true, error: 'A sync is already in progress -- wait for it to finish and try again.' });
+  }
+  scomSync.recalculateServerNames().catch((err) => log.error({ err }, 'scom server-name recalculation failed'));
+  res.json({ ok: true, started: true });
+});
+
 router.post('/auto-fetch/start', asyncHandler(async (req, res) => {
   await scomSync.startAutoFetch();
   log.info({ userId: req.user?.id }, 'scom auto-fetch started');

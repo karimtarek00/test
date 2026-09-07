@@ -117,6 +117,21 @@ export default function ConfigurationPage() {
     }, 1200);
   };
 
+  const runRecalculateServerNames = async () => {
+    if (!confirm('Re-fetch every already-CLOSED alert from SCOM by ID and overwrite its stored server name with the corrected value? This only needs to run once, after a server-name resolution fix, to correct alerts that closed before it shipped. Can take a while in a large environment, and any alert SCOM has already groomed away by now cannot be corrected.')) return;
+    const data = await api.post('/scom/recalculate-server-names', {});
+    if (data.skipped) { setRunStatus({ error: data.error }); return; }
+    setRunStatus({ running: true });
+    pollRef.current = setInterval(async () => {
+      const status = await api.get('/scom/run/status');
+      setRunStatus(status);
+      if (!status.running) {
+        clearInterval(pollRef.current);
+        load();
+      }
+    }, 1200);
+  };
+
   return (
     <>
       <TopBar title="Configuration" />
@@ -207,11 +222,20 @@ export default function ConfigurationPage() {
             <button className="btn-secondary btn" type="button" onClick={runRecalculate} disabled={runStatus?.running}>
               {runStatus?.running ? 'Working…' : 'Recalculate Timestamps'}
             </button>
+            <button className="btn-secondary btn" type="button" onClick={runRecalculateServerNames} disabled={runStatus?.running}>
+              {runStatus?.running ? 'Working…' : 'Recalculate Server Names (Closed Alerts)'}
+            </button>
           </div>
           <span className="text-faint" style={{ fontSize: 11, display: 'block', marginTop: 6 }}>
             Recalculate Timestamps is a one-time fix for alerts synced before a timestamp correction shipped -- it
             re-fetches every currently open alert from SCOM and overwrites its stored time with the corrected value.
             Already-closed alerts can't be corrected this way.
+          </span>
+          <span className="text-faint" style={{ fontSize: 11, display: 'block', marginTop: 6 }}>
+            Recalculate Server Names is the closed-alert counterpart -- a normal sync (even "Run Sync Now") only ever
+            re-checks currently open alerts, so an alert that already closed before a server-name fix shipped stays
+            wrong forever otherwise. This re-fetches those closed alerts from SCOM by ID directly. Alerts SCOM has
+            already groomed away by now can't be recovered this way either.
           </span>
           {runStatus?.error && <div className="error-text" style={{ marginTop: 10 }}>{runStatus.error}</div>}
           {runStatus?.lastResult && !runStatus.running && (
@@ -226,6 +250,13 @@ export default function ConfigurationPage() {
               {runStatus.lastRecalculateResult.ok
                 ? `Recalculation done: ${runStatus.lastRecalculateResult.checked} open alert(s) checked, ${runStatus.lastRecalculateResult.corrected} corrected.`
                 : `Recalculation failed: ${runStatus.lastRecalculateResult.error}`}
+            </div>
+          )}
+          {runStatus?.lastRecalculateServerNamesResult && !runStatus.running && (
+            <div className="help-text" style={{ marginTop: 10 }}>
+              {runStatus.lastRecalculateServerNamesResult.ok
+                ? `Server name recalculation done: ${runStatus.lastRecalculateServerNamesResult.totalClosedAlerts} closed alert(s) found, ${runStatus.lastRecalculateServerNamesResult.checked} still present in SCOM, ${runStatus.lastRecalculateServerNamesResult.corrected} corrected, ${runStatus.lastRecalculateServerNamesResult.notFoundInScom} already groomed away by SCOM.`
+                : `Server name recalculation failed: ${runStatus.lastRecalculateServerNamesResult.error}`}
             </div>
           )}
         </div>
