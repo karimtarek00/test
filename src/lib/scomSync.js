@@ -204,29 +204,25 @@ function mapResolutionLabel(code) {
 // these for every SQL Server instance that exists.
 const SQL_SYSTEM_DATABASES = new Set(['master', 'model', 'msdb', 'tempdb']);
 
-// Confirmed against both this app's own seed/demo data and a real
-// production dump: when an alert is raised directly against the
-// "Operating System" class instance itself (a huge category -- memory/CPU/
-// disk alerts), MonitoringObjectDisplayName is just the OS platform's own
-// display name -- "Microsoft Windows Server 2019 Standard", "Red Hat
-// Enterprise Linux Server release 7.9 (Maipo)", etc -- describing the
-// software running on the server, not identifying which server it is.
-// This is exactly how ~1,495 real alerts ended up "hosted" on a fake
-// device literally named "Microsoft Windows Server 2019 Standard": Path
-// had no backslash for these (see hostnameFromPath above), so resolution
-// fell through all the way to this display name and accepted it as-is.
-const GENERIC_OS_PLATFORM_NAME_PATTERNS = [
-  /^Microsoft Windows Server\b/i,
-  /^Microsoft Windows\b/i,
-  /^Red Hat Enterprise Linux\b/i,
-  /^Red Hat Distribution\b/i,
-  /^CentOS\b/i,
-  /^Ubuntu\b/i,
-  /^SUSE Linux Enterprise\b/i,
-  /^Oracle Linux\b/i,
-];
-function isGenericOsPlatformName(name) {
-  return GENERIC_OS_PLATFORM_NAME_PATTERNS.some((re) => re.test(name.trim()));
+// Every one of 200+ confirmed real hostnames in this org's SCOM
+// environment (checked across multiple full-fleet exports) follows a
+// hyphenated convention -- RMP-ITAPP-PCB1, c-rhq-tjsp2, ev2smtprole is the
+// rare exception but that one is always resolved via the trusted
+// NetbiosComputerName/PrincipalName fields, never through either fallback
+// below. Meanwhile every confirmed-fake value found so far by exactly this
+// route -- "Microsoft Windows Server 2019 Standard", "Red Hat
+// Distribution", the vendor namespace "Microsoft" (peeled off
+// "Microsoft.SystemCenter.AgentWatchersGroup", a SCOM-internal system
+// class path, not a server), a bare domain fragment like "se.com.sa" --
+// has NO hyphen. Rather than keep adding one exact-string exclusion per
+// newly-discovered bad value (three so far, each a completely different
+// shape), this checks the actual structural trait every real answer
+// shares: unless a Path/DisplayName-derived candidate looks like this
+// org's real hostname convention, don't trust it as one. The failure mode
+// on a wrong guess is graceful -- falls through to the next rule, or to
+// "Unknown" -- never a wrong name.
+function looksLikeRealHostname(candidate) {
+  return !!candidate && candidate.includes('-');
 }
 
 function hostnameFromDisplayName(displayName) {
@@ -234,16 +230,18 @@ function hostnameFromDisplayName(displayName) {
   // A cluster resource group's display name is "<RoleName> (<Server>)" --
   // confirmed against a real alert ("ECMDB2Role (RMP-DCDB2-ECMCS)") where
   // NetbiosComputerName/PrincipalName were both blank for that alert's
-  // target class. The parenthetical part is the real server. Checked
-  // before the generic-OS-name exclusion since "Red Hat Enterprise Linux
-  // Server release 7.9 (Maipo)" also ends in parens but that parenthetical
-  // is a codename, not a server -- isGenericOsPlatformName's prefix match
-  // catches it either way since it tests the start of the raw string.
-  if (isGenericOsPlatformName(displayName)) return null;
+  // target class. The parenthetical part is the real server.
   const clusterMatch = displayName.match(/\(([^)]+)\)\s*$/);
   if (clusterMatch) return clusterMatch[1];
   if (SQL_SYSTEM_DATABASES.has(displayName.trim().toLowerCase())) return null;
-  return displayName;
+  // A health-service/heartbeat alert's MonitoringObjectDisplayName is
+  // sometimes the real server's full FQDN ("RMP-DCAPP-abjy2.SEC.se.com.sa")
+  // rather than a bare hostname -- strip to the first label for the same
+  // reason hostnameFromPath does, so this always dedupes against the same
+  // server referenced elsewhere by its short name instead of creating a
+  // second, domain-suffixed duplicate.
+  const candidate = displayName.split('.')[0];
+  return looksLikeRealHostname(candidate) ? candidate : null;
 }
 
 // The SCOM Console's own "Path" field (shown in Alert Details) -- confirmed
@@ -258,34 +256,29 @@ function hostnameFromDisplayName(displayName) {
 // (the "master"/"msdb"/"DBA_Inventory" fake-server problem): those three
 // fields describe the alerting OBJECT, but Path always starts from the
 // real server that object lives on.
-// Confirmed against a real production dump: for an alert raised directly
-// against the "Operating System" instance itself (a huge category --
-// memory/CPU/disk alerts), this org's SCOM environment returns a Path with
-// NO backslash at all -- just the object's own class name (e.g. "Microsoft
-// Windows Server 2019 Standard"), because that object has no recorded
-// "hosted by" chain to walk up to the real computer. A path with no
-// backslash carries no server identity whatsoever UNLESS the whole thing
-// is itself an FQDN -- confirmed against a full 17k-row production export
-// (the "Export ALL Raw Alerts" feature) that a no-backslash Path comes in
-// two genuinely different shapes:
+// Confirmed against multiple real production exports that a no-backslash
+// Path comes in genuinely different shapes, not one:
 //   1. A bare generic OS/platform description with no server info at all
-//      ("Microsoft Windows Server 2019 Standard", "Red Hat Distribution")
-//      -- correctly rejected below via isGenericOsPlatformName.
+//      ("Microsoft Windows Server 2019 Standard", "Red Hat Distribution"),
+//      or a SCOM-internal system class/group path
+//      ("Microsoft.SystemCenter.AgentWatchersGroup", used by health-
+//      service/heartbeat alerts -- the real server for THESE is actually
+//      in MonitoringObjectDisplayName instead, see hostnameFromDisplayName
+//      above) -- correctly rejected by looksLikeRealHostname below.
 //   2. A real, dot-separated FQDN-style value with NO backslash at all --
 //      e.g. a Linux host monitored via the cross-platform MP
 //      ("c-rhq-tjsp2.sec.se.com.sa", nothing else appended), or a SQL
 //      Always On listener/availability-group object
 //      ("RHP-ITDBS-SH02.SEC.se.com.sa.SH02HA" -- domain and AG-listener
 //      name appended with dots instead of a backslash). Both cases are a
-//      real, recoverable hostname as the first label -- this was the exact
-//      cause of 450 alerts resolving to "Unknown" despite Path actually
-//      having the answer, found via the same full-export diagnostic.
+//      real, recoverable hostname as the first label.
 function hostnameFromPath(path) {
   if (!path) return null;
   const serverSegment = path.includes('\\') ? path.split('\\')[0] : path;
   if (!serverSegment) return null;
-  if (!path.includes('\\') && isGenericOsPlatformName(serverSegment)) return null;
-  return serverSegment.split('.')[0];
+  const candidate = serverSegment.split('.')[0];
+  if (!path.includes('\\') && !looksLikeRealHostname(candidate)) return null;
+  return candidate;
 }
 
 // Two different code-only assumptions about this SCOM management server's
