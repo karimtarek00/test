@@ -222,7 +222,11 @@ const SQL_SYSTEM_DATABASES = new Set(['master', 'model', 'msdb', 'tempdb']);
 // on a wrong guess is graceful -- falls through to the next rule, or to
 // "Unknown" -- never a wrong name.
 function looksLikeRealHostname(candidate) {
-  return !!candidate && candidate.includes('-');
+  // Every confirmed real hostname in this org contains a hyphen; every
+  // confirmed-fake value found so far does not -- except free-text labels
+  // like "6.14 - Archive" that embed a hyphen as a " - " word separator.
+  // A real hostname never contains whitespace, so require both.
+  return !!candidate && candidate.includes('-') && !/\s/.test(candidate);
 }
 
 function hostnameFromDisplayName(displayName) {

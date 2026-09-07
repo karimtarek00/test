@@ -18,7 +18,15 @@ router.get('/', asyncHandler(async (req, res) => {
   const sortCol = allowedSort.includes(sort) ? sort : 'hostname';
   const sortDir = dir === 'desc' ? 'DESC' : 'ASC';
 
-  const where = [];
+  // Historical hostname-resolution bugs (long since fixed in the sync
+  // itself) left behind server rows that were never real hostnames -- Unix
+  // mount points and free-text labels that got misidentified as a
+  // hostname somewhere upstream. Neither shape is a valid Windows
+  // NetBIOS/DNS hostname (no leading slash, no embedded whitespace), so
+  // excluding them here can't hide a genuine server -- unlike a
+  // hyphen-based filter, which real short hostnames in this org (e.g.
+  // ev2smtprole) would fail.
+  const where = [`s.hostname NOT LIKE '/%'`, `s.hostname NOT LIKE '% %'`];
   const params = [];
   if (active !== 'all') { params.push(active === '0' ? 0 : 1); where.push(`s.active = $${params.length}`); }
   if (search) { params.push(`%${search}%`); where.push(`(s.hostname LIKE $${params.length} OR s.fqdn LIKE $${params.length})`); }

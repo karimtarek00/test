@@ -89,7 +89,7 @@ export default function AnalysisPage() {
 
             <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 16 }}>
               <RankedListPanel title="Top Alarm Types" rows={summary.topAlarmTypes} max={maxTypeCount} wrapLabels />
-              <RankedListPanel title="Top Devices by Volume" rows={summary.topDevices} max={maxDeviceCount} />
+              <RankedListPanel title="Top Devices by Volume" rows={summary.topDevices} max={maxDeviceCount} barColor="#7c3aed" />
             </div>
 
             <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 16 }}>
@@ -195,7 +195,7 @@ function KpiCard({ label, value, sub, tone, small }) {
   );
 }
 
-function RankedListPanel({ title, rows, max, wrapLabels = false }) {
+function RankedListPanel({ title, rows, max, wrapLabels = false, barColor = 'var(--info)' }) {
   return (
     <div className="panel">
       <div className="panel-header"><span className="panel-title">{title}</span></div>
@@ -217,9 +217,9 @@ function RankedListPanel({ title, rows, max, wrapLabels = false }) {
             >
               {row.name}
             </div>
-            <div style={{ display: 'flex', alignItems: 'center', gap: 12 }}>
+            <div style={{ flex: 1, display: 'flex', alignItems: 'center', gap: 12, minWidth: 0 }}>
               <div style={{ flex: 1, background: 'var(--bg-elevated)', borderRadius: 6, height: 9, overflow: 'hidden' }}>
-                <div style={{ width: `${(row.count / max) * 100}%`, height: '100%', background: 'var(--info)' }} />
+                <div style={{ width: `${(row.count / max) * 100}%`, height: '100%', background: barColor }} />
               </div>
               <div style={{ width: 50, textAlign: 'right', fontSize: 12.5, fontWeight: 700 }}>{row.count}</div>
             </div>

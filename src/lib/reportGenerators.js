@@ -44,8 +44,6 @@ function colorForResolution(label, index) {
   return RESOLUTION_COLORS_FALLBACK[index % RESOLUTION_COLORS_FALLBACK.length];
 }
 
-function clamp(n, min, max) { return Math.max(min, Math.min(max, n)); }
-
 function describeRange(from, to) {
   if (!from && !to) return 'All time';
   if (from && to) return `${from} to ${to} (local time)`;
@@ -81,6 +79,29 @@ function topNPlusOther(rows, n, colors) {
   return slices;
 }
 const CATEGORICAL_COLORS = ['#2684ff', '#7c3aed', '#00c896', '#ffb020', '#ff4d4f', '#22c1c3'];
+
+// A daily trend over "all time" can span hundreds of days -- one bar per day
+// would be unreadable (and was, as a table, hundreds of rows long). Group
+// consecutive days into buckets so the chart always stays at or under
+// maxBars, while still showing full daily granularity for any range short
+// enough to fit.
+function bucketTrend(rows, maxBars) {
+  if (rows.length <= maxBars) {
+    return { labels: rows.map((r) => r.day), values: rows.map((r) => r.c), bucketed: false };
+  }
+  const bucketSize = Math.ceil(rows.length / maxBars);
+  const labels = [];
+  const values = [];
+  for (let i = 0; i < rows.length; i += bucketSize) {
+    const chunk = rows.slice(i, i + bucketSize);
+    // A "day..day" range label reads fine in a table but is too long to fit
+    // under a narrow bar without wrapping -- the bucket's first day (like a
+    // week-starting label) is enough context for a trend chart.
+    labels.push(chunk[0].day);
+    values.push(chunk.reduce((sum, r) => sum + r.c, 0));
+  }
+  return { labels, values, bucketed: true };
+}
 
 async function buildInventoryModel() {
   const [{ rows }, totalsRow, envRows, osRows, dcRows] = await Promise.all([
@@ -229,11 +250,24 @@ async function buildSummaryModel(params = {}) {
   // report, weighted so a device with many DIFFERENT recurring problems
   // (distinct_types) or a problem spread across many days (distinct_days)
   // ranks worse than one with the same alarm count from a single repeating
-  // alert on one bad day.
-  const healthTableRows = healthRows.rows.map((r) => ({
-    ...r,
-    healthScore: clamp(Math.round(100 - r.alarms * 2 - r.distinct_types * 3 - r.distinct_days * 1), 0, 100),
-  })).sort((a, b) => a.healthScore - b.healthScore);
+  // alert on one bad day. Same shape as healthScore.js's fleet-wide score
+  // (normalize raw risk against the worst device in THIS result set), kept
+  // separate because this one has to work over ranged/device-filtered rows
+  // matched by name, not the fleet's live server_id join.
+  const maxAlarmsInSet = Math.max(1, ...healthRows.rows.map((r) => r.alarms));
+  const healthRisk = (r) => {
+    const volumeNorm = r.alarms / maxAlarmsInSet;
+    const repeatRatio = r.alarms > 0 ? 1 - r.distinct_types / r.alarms : 0;
+    const daysNorm = Math.min(r.distinct_days, 8) / 8;
+    return volumeNorm * 60 + repeatRatio * 20 + daysNorm * 20;
+  };
+  const maxRiskInSet = Math.max(1, ...healthRows.rows.map(healthRisk));
+  const healthTableRows = healthRows.rows.map((r) => {
+    const healthScore = Math.round((100 - (healthRisk(r) / maxRiskInSet) * 100) * 10) / 10;
+    return { ...r, healthScore };
+  }).sort((a, b) => a.healthScore - b.healthScore);
+
+  const dailyTrend = bucketTrend(dailyRows.rows, 60);
 
   return {
     reportType: 'summary',
@@ -285,12 +319,18 @@ async function buildSummaryModel(params = {}) {
         color: `#${BRAND_HEX_2}`,
       },
       {
-        type: 'table',
+        type: 'rankedBars',
         title: 'Least-Healthy Devices',
-        columns: ['Device', 'Alarms', 'Distinct Types', 'Distinct Days', 'Health Score'],
-        rows: healthTableRows.map((r) => [r.device, String(r.alarms), String(r.distinct_types), String(r.distinct_days), String(r.healthScore)]),
+        items: healthTableRows.map((r) => ({ label: `${r.device} (health ${r.healthScore})`, value: Math.round(100 - r.healthScore) })),
+        color: colorForSeverity('Critical'),
       },
-      { type: 'table', title: 'Daily Trend (local calendar day)', columns: ['Date', 'Count'], rows: dailyRows.rows.map((r) => [r.day, String(r.c)]) },
+      {
+        type: 'barChart',
+        title: dailyTrend.bucketed ? 'Daily Trend (bucketed, local calendar day)' : 'Daily Trend (local calendar day)',
+        xLabel: 'Date',
+        labels: dailyTrend.labels,
+        values: dailyTrend.values,
+      },
     ],
   };
 }
@@ -424,8 +464,13 @@ function drawDonutPair(doc, left, right) {
   doc.y = Math.max(leftBottom, rightBottom) + 6;
 }
 
-function drawMonthlyBarChart(doc, section) {
-  const { title, labels, values } = section;
+// Generic vertical bar chart -- used for the monthly trend (a couple dozen
+// bars, one label under each) and for the daily trend once bucketed (up to
+// ~60 bars). At higher bar counts a label under every single bar would
+// overlap, so labels (and, once bars get very thin, the value-above-bar
+// number too) are thinned out to roughly one per 30pt of width.
+function drawBarChart(doc, section) {
+  const { title, labels, values, color } = section;
   const left = doc.page.margins.left;
   const usableWidth = doc.page.width - doc.page.margins.left - doc.page.margins.right;
   const chartHeight = 110;
@@ -440,13 +485,17 @@ function drawMonthlyBarChart(doc, section) {
   const max = Math.max(1, ...values);
   const slot = usableWidth / values.length;
   const barWidth = Math.min(40, slot * 0.55);
+  const labelStep = Math.max(1, Math.ceil(30 / slot));
+  const showValues = slot >= 14;
   values.forEach((v, i) => {
     const barHeight = (v / max) * chartHeight;
     const bx = left + i * slot + (slot - barWidth) / 2;
     const by = chartTop + chartHeight - barHeight;
-    doc.rect(bx, by, barWidth, Math.max(1, barHeight)).fillColor(`#${BRAND_HEX}`).fill();
-    doc.fontSize(7).fillColor('#333').text(String(v), bx - 5, by - 10, { width: barWidth + 10, align: 'center' });
-    doc.fontSize(7).fillColor('#666').text(labels[i] || '', left + i * slot, chartTop + chartHeight + 4, { width: slot, align: 'center' });
+    doc.rect(bx, by, barWidth, Math.max(1, barHeight)).fillColor(color || `#${BRAND_HEX}`).fill();
+    if (showValues) doc.fontSize(7).fillColor('#333').text(String(v), bx - 5, by - 10, { width: barWidth + 10, align: 'center' });
+    if (i % labelStep === 0) {
+      doc.fontSize(6.5).fillColor('#666').text(labels[i] || '', left + i * slot, chartTop + chartHeight + 4, { width: slot * labelStep, align: 'center', lineBreak: false, ellipsis: true });
+    }
   });
   doc.moveTo(left, chartTop + chartHeight).lineTo(left + usableWidth, chartTop + chartHeight).strokeColor('#ccc').stroke();
   doc.y = chartTop + chartHeight + 20;
@@ -518,8 +567,8 @@ function renderPdf(model, res, filename) {
       drawKpiCards(doc, section.cards);
       continue;
     }
-    if (section.type === 'monthlyBars') {
-      drawMonthlyBarChart(doc, section);
+    if (section.type === 'monthlyBars' || section.type === 'barChart') {
+      drawBarChart(doc, section);
       continue;
     }
     if (section.type === 'rankedBars') {
@@ -558,6 +607,9 @@ function toTabularSection(section) {
   }
   if (section.type === 'monthlyBars') {
     return { type: 'table', title: section.title, columns: ['Month', 'Count'], rows: section.labels.map((l, i) => [l, String(section.values[i])]) };
+  }
+  if (section.type === 'barChart') {
+    return { type: 'table', title: section.title, columns: [section.xLabel || 'Label', 'Count'], rows: section.labels.map((l, i) => [l, String(section.values[i])]) };
   }
   if (section.type === 'rankedBars') {
     return { type: 'table', title: section.title, columns: ['Rank', 'Label', 'Count'], rows: section.items.map((it, i) => [String(i + 1), it.label, String(it.value)]) };
