@@ -218,6 +218,7 @@ const GENERIC_OS_PLATFORM_NAME_PATTERNS = [
   /^Microsoft Windows Server\b/i,
   /^Microsoft Windows\b/i,
   /^Red Hat Enterprise Linux\b/i,
+  /^Red Hat Distribution\b/i,
   /^CentOS\b/i,
   /^Ubuntu\b/i,
   /^SUSE Linux Enterprise\b/i,
@@ -262,15 +263,27 @@ function hostnameFromDisplayName(displayName) {
 // NO backslash at all -- just the object's own class name (e.g. "Microsoft
 // Windows Server 2019 Standard"), because that object has no recorded
 // "hosted by" chain to walk up to the real computer. A path with no
-// backslash carries no server identity whatsoever, so returning it as if
-// it were a hostname was exactly how ~1,495 real alerts ended up with
-// "Microsoft Windows Server 2019 Standard" as their "server name" -- must
-// require a backslash (an actual "<hostname>\<class chain>" shape) before
-// trusting the first segment.
+// backslash carries no server identity whatsoever UNLESS the whole thing
+// is itself an FQDN -- confirmed against a full 17k-row production export
+// (the "Export ALL Raw Alerts" feature) that a no-backslash Path comes in
+// two genuinely different shapes:
+//   1. A bare generic OS/platform description with no server info at all
+//      ("Microsoft Windows Server 2019 Standard", "Red Hat Distribution")
+//      -- correctly rejected below via isGenericOsPlatformName.
+//   2. A real, dot-separated FQDN-style value with NO backslash at all --
+//      e.g. a Linux host monitored via the cross-platform MP
+//      ("c-rhq-tjsp2.sec.se.com.sa", nothing else appended), or a SQL
+//      Always On listener/availability-group object
+//      ("RHP-ITDBS-SH02.SEC.se.com.sa.SH02HA" -- domain and AG-listener
+//      name appended with dots instead of a backslash). Both cases are a
+//      real, recoverable hostname as the first label -- this was the exact
+//      cause of 450 alerts resolving to "Unknown" despite Path actually
+//      having the answer, found via the same full-export diagnostic.
 function hostnameFromPath(path) {
-  if (!path || !path.includes('\\')) return null;
-  const serverSegment = path.split('\\')[0];
+  if (!path) return null;
+  const serverSegment = path.includes('\\') ? path.split('\\')[0] : path;
   if (!serverSegment) return null;
+  if (!path.includes('\\') && isGenericOsPlatformName(serverSegment)) return null;
   return serverSegment.split('.')[0];
 }
 
