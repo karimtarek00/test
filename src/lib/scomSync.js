@@ -639,6 +639,26 @@ async function recalculateServerNames() {
   }
 }
 
+// Explicit, deliberately destructive last resort -- for when a closed
+// alert's server name is wrong AND SCOM has already groomed the alert away
+// (recalculateServerNames's notFoundInScom case), there is no data left
+// anywhere, on this app's side or SCOM's, to recover the real hostname
+// from. Requested and confirmed by the user as the accepted tradeoff after
+// being told this also deletes every OTHER closed alert's history
+// (including ones that already had a correct server name) -- not just the
+// ones that were ever wrong. No server_id/servers cleanup here: a server
+// row can still be valid inventory (or still have open alerts) independent
+// of whether it has any closed-alert history left.
+async function purgeClosedAlerts() {
+  if (syncing) return { ok: false, skipped: true, error: 'A sync is already in progress -- wait for it to finish and try again.' };
+  const { rows } = await pool.query(`DELETE FROM alerts WHERE resolution_state_label = 'Closed' RETURNING id`);
+  const deletedCount = rows.length;
+  if (deletedCount > 0) invalidateHealthScoreCache();
+  const result = { ok: true, deletedCount, at: new Date().toISOString() };
+  log.warn(result, 'all closed alerts purged (user-requested, irreversible)');
+  return result;
+}
+
 async function runOnce(options = {}) {
   const mode = options.mode === 'incremental' ? 'incremental' : 'full';
   if (syncing) return { ok: false, skipped: true, error: 'A sync is already in progress -- wait for it to finish and try again.' };
@@ -924,5 +944,5 @@ module.exports = {
   startAutoFetch, stopAutoFetch, isAutoFetchRunning, resumeAutoFetchIfEnabled,
   isFullSyncScheduled, resumeFullSync, getFullSyncScheduleInfo,
   incrementalCutoff, INCREMENTAL_LOOKBACK_BUFFER_MS,
-  fetchRawAlertSample, fetchAllRawAlerts, recalculateTimestamps, recalculateServerNames,
+  fetchRawAlertSample, fetchAllRawAlerts, recalculateTimestamps, recalculateServerNames, purgeClosedAlerts,
 };

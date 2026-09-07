@@ -14,6 +14,8 @@ export default function ConfigurationPage() {
   const [testResult, setTestResult] = useState(null);
   const [runStatus, setRunStatus] = useState(null);
   const [autoFetchBusy, setAutoFetchBusy] = useState(false);
+  const [purgeBusy, setPurgeBusy] = useState(false);
+  const [purgeResult, setPurgeResult] = useState(null);
   const pollRef = useRef(null);
 
   const load = () => {
@@ -130,6 +132,26 @@ export default function ConfigurationPage() {
         load();
       }
     }, 1200);
+  };
+
+  const runPurgeClosedAlerts = async () => {
+    const warning = 'This permanently deletes EVERY closed alert in this app -- not just the ones with a wrong server name, all of them, including any that were already correct. Open alerts are not touched. This cannot be undone from within the app. Make sure you have a backup of data\\server_watch.db before doing this.\n\nType DELETE ALL CLOSED ALERTS (exactly, in capitals) to proceed:';
+    const typed = prompt(warning);
+    if (typed !== 'DELETE ALL CLOSED ALERTS') {
+      if (typed !== null) alert('Confirmation text did not match -- nothing was deleted.');
+      return;
+    }
+    setPurgeBusy(true);
+    setPurgeResult(null);
+    try {
+      const result = await api.post('/scom/purge-closed-alerts', { confirm: 'DELETE ALL CLOSED ALERTS' });
+      setPurgeResult(result);
+      load();
+    } catch (err) {
+      setPurgeResult({ ok: false, error: err.message });
+    } finally {
+      setPurgeBusy(false);
+    }
   };
 
   return (
@@ -257,6 +279,28 @@ export default function ConfigurationPage() {
               {runStatus.lastRecalculateServerNamesResult.ok
                 ? `Server name recalculation done: ${runStatus.lastRecalculateServerNamesResult.totalClosedAlerts} closed alert(s) found, ${runStatus.lastRecalculateServerNamesResult.checked} still present in SCOM, ${runStatus.lastRecalculateServerNamesResult.corrected} corrected, ${runStatus.lastRecalculateServerNamesResult.notFoundInScom} already groomed away by SCOM.`
                 : `Server name recalculation failed: ${runStatus.lastRecalculateServerNamesResult.error}`}
+            </div>
+          )}
+        </div>
+
+        <div className="panel" style={{ border: '1px solid var(--critical)' }}>
+          <div className="panel-header">
+            <span className="panel-title" style={{ color: 'var(--critical)' }}>Danger Zone</span>
+          </div>
+          <p className="help-text" style={{ marginTop: 0 }}>
+            Only use this after Recalculate Server Names above still leaves alerts with a wrong server name -- that
+            means SCOM has already groomed those specific alerts away and there is no data left anywhere (here or in
+            SCOM) to recover their real hostname from. This deletes <strong>every</strong> closed alert, not just the
+            wrong ones -- including any that already had a correct server name. Open alerts are never touched.
+            Historical trend charts and the Alerts report lose that closed-alert history permanently. Back up
+            <code> data\server_watch.db</code> before doing this.
+          </p>
+          <button className="btn-danger btn" type="button" onClick={runPurgeClosedAlerts} disabled={purgeBusy}>
+            {purgeBusy ? 'Deleting…' : 'Delete ALL Closed Alerts'}
+          </button>
+          {purgeResult && (
+            <div className={purgeResult.ok ? 'help-text' : 'error-text'} style={{ marginTop: 10 }}>
+              {purgeResult.ok ? `Deleted ${purgeResult.deletedCount} closed alert(s).` : `Failed: ${purgeResult.error}`}
             </div>
           )}
         </div>

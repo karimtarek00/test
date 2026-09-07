@@ -111,6 +111,28 @@ router.post('/recalculate-server-names', (req, res) => {
   res.json({ ok: true, started: true });
 });
 
+// Irreversible, user-requested last resort for closed alerts whose server
+// name is wrong AND unrecoverable (SCOM has already groomed the alert
+// away, so recalculate-server-names has nothing left to re-fetch). Deletes
+// EVERY closed alert, not just the ones that were ever wrong -- there is
+// no way to distinguish "closed and correct" from "closed and wrong" once
+// the decision is to wipe the category wholesale, and that tradeoff was
+// explicitly explained to and accepted by the user. A plain DELETE, not
+// the fire-and-forget + poll-status shape the other actions use above --
+// no SCOM round trip involved, so this finishes fast enough to just
+// respond directly. Requires a literal confirmation phrase in the body as
+// defense-in-depth beyond the frontend's own confirm() dialog, since a
+// bare POST to this endpoint (a stray retry, a copy-pasted curl command)
+// would otherwise be enough to trigger it.
+router.post('/purge-closed-alerts', asyncHandler(async (req, res) => {
+  if (req.body?.confirm !== 'DELETE ALL CLOSED ALERTS') {
+    throw AppError.badRequest('Confirmation phrase missing or incorrect.');
+  }
+  const result = await scomSync.purgeClosedAlerts();
+  log.warn({ userId: req.user?.id, deletedCount: result.deletedCount }, 'all closed alerts purged via admin request');
+  res.json(result);
+}));
+
 router.post('/auto-fetch/start', asyncHandler(async (req, res) => {
   await scomSync.startAutoFetch();
   log.info({ userId: req.user?.id }, 'scom auto-fetch started');
