@@ -21,7 +21,7 @@ const TOOLS = [
     type: 'function',
     function: {
       name: 'get_server_status',
-      description: 'Look up one specific server by hostname or partial hostname and return its full current status: environment, criticality, active state, and its actual open alerts (not a top-N summary). Use this any time a question names or clearly refers to a SPECIFIC server that is not already fully covered by the data snapshot above.',
+      description: 'Look up one specific server by hostname or partial hostname and return its full current status: environment, criticality, active state, its actual open alerts, AND its recent alert history (most recent closed alerts, plus the all-time total). Use this any time a question names or clearly refers to a SPECIFIC server that is not already fully covered by the data snapshot above -- including "history"/"past alerts"/"what happened on server X" questions. If more history rows are needed than the recent list returned here, follow up with search_alerts filtered to that server.',
       parameters: {
         type: 'object',
         properties: {
@@ -116,10 +116,20 @@ async function getServerStatus({ hostname } = {}) {
   const health = await computeHealthScores();
   const matches = [];
   for (const s of servers) {
-    const [{ rows: openAlerts }, { rows: totalRow }] = await Promise.all([
+    const [{ rows: openAlerts }, { rows: closedAlerts }, { rows: totalRow }] = await Promise.all([
       pool.query(
         `SELECT alert_name, severity, resolution_state_label, created_at FROM alerts
          WHERE server_id = $1 AND resolution_state_label != 'Closed' ORDER BY created_at DESC LIMIT 15`,
+        [s.id]
+      ),
+      // "History"/"past alerts" questions about a specific server need
+      // actual closed-alert rows, not just the bare allTimeAlertCount below
+      // -- that count alone gave the model nothing to answer a history
+      // question from, so it was reporting it "didn't have" history data
+      // that in fact just wasn't being returned by this tool at all.
+      pool.query(
+        `SELECT alert_name, severity, resolution_state_label, created_at, resolved_at FROM alerts
+         WHERE server_id = $1 AND resolution_state_label = 'Closed' ORDER BY created_at DESC LIMIT 15`,
         [s.id]
       ),
       pool.query(`SELECT COUNT(*)::int AS c FROM alerts WHERE server_id = $1`, [s.id]),
@@ -140,6 +150,11 @@ async function getServerStatus({ hostname } = {}) {
       openAlertCount: openAlerts.length,
       allTimeAlertCount: totalRow[0].c,
       openAlerts: openAlerts.map((a) => ({ name: a.alert_name, severity: a.severity, state: a.resolution_state_label, raisedAt: a.created_at })),
+      recentClosedAlertCount: closedAlerts.length,
+      recentClosedAlerts: closedAlerts.map((a) => ({ name: a.alert_name, severity: a.severity, raisedAt: a.created_at, resolvedAt: a.resolved_at })),
+      historyNote: totalRow[0].c > openAlerts.length + closedAlerts.length
+        ? `Showing the ${openAlerts.length} most recent open and ${closedAlerts.length} most recent closed alerts out of ${totalRow[0].c} all-time -- use search_alerts with server="${s.hostname}" for the full history or a specific date range.`
+        : undefined,
     });
   }
   return { found: true, matchCount: matches.length, matches };
