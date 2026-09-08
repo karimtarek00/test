@@ -333,8 +333,11 @@ export default function ConfigurationPage() {
             </a>
           </div>
           <p className="help-text" style={{ marginTop: 8, marginBottom: 0 }}>
-            "Export ALL" pulls every currently open alert from SCOM (not a capped sample) -- the same live query a
-            full sync uses. This can take a while and produce a large file in a big environment.
+            "Export ALL" pulls every currently open alert from SCOM (not a capped sample -- the same live query a
+            full sync uses) plus every closed alert on record in this app's own database, since SCOM's live query
+            can't see closed alerts at all. Matches the Alarms page's total count. Raw SCOM diagnostic columns are
+            blank for closed rows (a "Data Source" column marks which is which) since those fields aren't kept once
+            an alert is imported. This can take a while and produce a large file in a big environment.
           </p>
         </div>
 

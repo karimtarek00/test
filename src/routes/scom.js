@@ -143,7 +143,7 @@ router.post('/auto-fetch/start', asyncHandler(async (req, res) => {
 // full unbounded export) so their output columns can never drift apart --
 // a wrong server name traced in one should look identical in the other.
 const RAW_EXPORT_HEADER = [
-  'Alert Name', 'Resolved Hostname', 'Resolution Rule',
+  'Data Source', 'Alert Name', 'Resolved Hostname', 'Resolution Rule',
   'Raw NetbiosComputerName', 'Raw PrincipalName', 'Raw MonitoringObjectPath', 'Raw MonitoringObjectDisplayName',
   'Severity', 'Resolution State',
   'Raw Time Raised (from SCOM, no conversion)', 'Converted Time Raised (UTC, stored in this app)',
@@ -151,6 +151,13 @@ const RAW_EXPORT_HEADER = [
 
 function toRawExportRows(items) {
   return items.map((a) => ({
+    // Only /export/raw-all mixes two origins (SCOM live + this app's own
+    // database, for closed alerts SCOM's live query can't see) -- the
+    // sample route's items are always SCOM-live and don't set this, hence
+    // the fallback. Raw-field columns are blank by design for a
+    // database-origin row, not a resolution failure -- this column is what
+    // tells the two apart.
+    'Data Source': a.dataSource || 'SCOM (live)',
     'Alert Name': a.alertName,
     'Resolved Hostname': a.hostname,
     'Resolution Rule': a.hostnameSource,

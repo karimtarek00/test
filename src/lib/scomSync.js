@@ -504,21 +504,54 @@ ConvertTo-Json -InputObject $alerts -Depth 5 -Compress
   return rows.map((row) => mapAlertRow(row, adjustmentMinutes));
 }
 
-// Full, unbounded raw export -- every currently-open alert, with the same
-// raw diagnostic fields as fetchRawAlertSample(), but with no `-First N`
-// cap. Reuses fetchOpenAlerts()'s exact live query (mode 'full', no
-// since-cutoff) -- the same one runOnce() already uses for a real sync,
-// already proven to handle this org's real fleet scale (~18,750 alerts,
-// see file header) in one Invoke-Command round trip. fetchRawAlertSample's
-// bounded sample exists for a *fast* look at a handful of alerts; this is
-// for "I want everything," where a `-First N` cap risks silently missing
-// whole alert categories if SCOM doesn't return rows in a representative
-// order. Still read-only -- nothing is written to the database.
+// Closed alerts are invisible to Get-SCOMAlert's live query (ResolutionState
+// < 255 excludes them, and SCOM eventually grooms old closed alerts out of
+// its own store entirely) -- the only place they still exist is this app's
+// own database, once a sync has ever seen them. None of the raw SCOM
+// diagnostic fields (NetbiosComputerName, PrincipalName,
+// MonitoringObjectPath/DisplayName) are persisted, though, only the
+// already-resolved hostname -- so those columns come back blank here, by
+// design, not as a bug in the export.
+async function fetchClosedAlertsFromDb() {
+  const { rows } = await pool.query(`
+    SELECT a.scom_alert_id, a.alert_name, COALESCE(s.hostname, a.server_name_raw) AS hostname,
+           a.severity, a.resolution_state_label, a.created_at
+    FROM alerts a LEFT JOIN servers s ON s.id = a.server_id
+    WHERE a.resolution_state_label = 'Closed'
+  `);
+  return rows.map((r) => ({
+    scomAlertId: r.scom_alert_id,
+    dataSource: 'App database (closed)',
+    hostname: r.hostname,
+    hostnameSource: "From this app's database (closed alert -- SCOM's live query can't see closed alerts, and raw diagnostic fields aren't kept once one is imported)",
+    rawNetbiosComputerName: null,
+    rawPrincipalName: null,
+    rawMonitoringObjectPath: null,
+    rawMonitoringObjectDisplayName: null,
+    alertName: r.alert_name,
+    severity: r.severity,
+    resolutionStateLabel: r.resolution_state_label,
+    rawTimeRaisedLocal: null,
+    timeRaised: r.created_at,
+  }));
+}
+
+// Full, unbounded raw export -- every currently-open alert from SCOM (live,
+// with the same raw diagnostic fields as fetchRawAlertSample() and no
+// `-First N` cap -- see fetchOpenAlerts()'s comment, proven at this org's
+// real fleet scale, ~18,750 alerts, in one Invoke-Command round trip) PLUS
+// every closed alert this app has on record. Without the closed half this
+// export silently undercounts against the Alarms page's total (which counts
+// both) -- e.g. 16,000 open vs a 20,209 fleet-wide total is the closed
+// alerts, not a bug in either count.
 async function fetchAllRawAlerts(settingsOverride) {
   const settings = settingsOverride || (await getSettings());
   assertCredentialsPresent(settings);
-  const { items } = await fetchOpenAlerts(settings, 'full', null);
-  return items;
+  const [{ items: openItems }, closedItems] = await Promise.all([
+    fetchOpenAlerts(settings, 'full', null),
+    fetchClosedAlertsFromDb(),
+  ]);
+  return [...openItems.map((item) => ({ ...item, dataSource: 'SCOM (live)' })), ...closedItems];
 }
 
 // Fetches specific alerts BY ID -- unlike fetchOpenAlerts (which always
