@@ -24,7 +24,11 @@ function buildAlertFilters(query) {
   else if (resolution === 'closed') where.push(`a.resolution_state_label = 'Closed'`);
   if (serverId) { params.push(serverId); where.push(`a.server_id = $${params.length}`); }
   if (server) { params.push(`%${server}%`, `%${server}%`); where.push(`(COALESCE(s.hostname, a.server_name_raw) LIKE $${params.length - 1} OR a.server_name_raw LIKE $${params.length})`); }
-  if (alertName) { params.push(alertName); where.push(`a.alert_name = $${params.length}`); }
+  // LIKE, not exact -- the Alarms/Analysis page dropdowns only ever send an
+  // exact name (which a LIKE still matches), but the AI's search_alerts
+  // tool is documented as accepting a partial term ("CPU", "backup") and
+  // needs this to actually behave that way instead of matching nothing.
+  if (alertName) { params.push(`%${alertName}%`); where.push(`a.alert_name LIKE $${params.length}`); }
   if (q) { params.push(`%${q}%`, `%${q}%`); where.push(`(a.alert_name LIKE $${params.length - 1} OR a.server_name_raw LIKE $${params.length})`); }
   if (from) { params.push(from); where.push(`a.created_at >= $${params.length}`); }
   if (to) { params.push(endOfDay(to)); where.push(`a.created_at <= $${params.length}`); }
