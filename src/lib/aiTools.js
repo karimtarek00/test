@@ -21,7 +21,7 @@ const TOOLS = [
     type: 'function',
     function: {
       name: 'get_server_status',
-      description: 'Look up one specific server by hostname or partial hostname and return its full current status: environment, criticality, active state, its actual open alerts, AND its recent alert history (most recent closed alerts, plus the all-time total). Use this any time a question names or clearly refers to a SPECIFIC server that is not already fully covered by the data snapshot above -- including "history"/"past alerts"/"what happened on server X" questions. If more history rows are needed than the recent list returned here, follow up with search_alerts filtered to that server.',
+      description: 'Look up one specific server by hostname or partial hostname and return EVERYTHING known about it: environment, business unit, data center, OS type, criticality, active state, how it entered the inventory (manual/import/sync) and when, any freeform notes, its health score, its actual open alerts, AND its recent alert history (most recent closed alerts, plus the all-time total). Use this any time a question names or clearly refers to a SPECIFIC server/node/device that is not already fully covered by the data snapshot above -- including "history"/"past alerts"/"what happened on server X" and "what OS is X running"/"when was X added"/"are there notes on X" questions. If more alert history is needed than the recent list returned here, follow up with search_alerts filtered to that server.',
       parameters: {
         type: 'object',
         properties: {
@@ -76,7 +76,7 @@ const TOOLS = [
     type: 'function',
     function: {
       name: 'list_servers',
-      description: 'List servers in the inventory filtered by environment, data center, business unit, OS type, critical-watchlist status, or active/inactive. Use this for questions like "which servers are in the DR environment", "list critical servers", "what servers are in data center X" -- not covered by get_server_status (which looks up one specific named server).',
+      description: 'List servers in the inventory filtered by environment, data center, business unit, OS type, critical-watchlist status, or active/inactive. Each returned server includes its OS type, how it entered the inventory (manual/import/sync), when it was added, and any freeform notes -- not just the filter fields. Use this for questions like "which servers are in the DR environment", "list critical servers", "what servers are in data center X" -- not covered by get_server_status (which looks up one specific named server).',
       parameters: {
         type: 'object',
         properties: {
@@ -86,6 +86,7 @@ const TOOLS = [
           osType: { type: 'string', description: 'Exact or partial OS type.' },
           onCriticalWatchlist: { type: 'boolean', description: 'true = only critical-watchlist servers, false = only non-watchlist servers, omit = both.' },
           active: { type: 'boolean', description: 'true = only active servers, false = only inactive, omit = both (defaults to active-only if omitted, since inactive servers are rarely relevant).' },
+          limit: { type: 'integer', description: 'How many servers to return. Default 100, max 200.' },
         },
       },
     },
@@ -108,7 +109,8 @@ const GROUP_BY_COLUMNS = {
 async function getServerStatus({ hostname } = {}) {
   if (!hostname || !hostname.trim()) return { error: 'hostname is required' };
   const { rows: servers } = await pool.query(
-    `SELECT id, hostname, fqdn, environment, business_unit, data_center, is_critical, active
+    `SELECT id, hostname, fqdn, environment, business_unit, data_center, os_type, source, notes,
+            is_critical, active, created_at
      FROM servers WHERE hostname LIKE $1 ORDER BY hostname LIMIT 5`,
     [`%${hostname.trim()}%`]
   );
@@ -142,6 +144,13 @@ async function getServerStatus({ hostname } = {}) {
       environment: s.environment,
       businessUnit: s.business_unit,
       dataCenter: s.data_center,
+      osType: s.os_type,
+      // How this server entered the inventory -- manual (added by an
+      // admin), import (spreadsheet), or sync (auto-created the first time
+      // SCOM alerted on a hostname the inventory didn't have yet).
+      source: s.source,
+      notes: s.notes || null,
+      addedOn: s.created_at,
       onCriticalWatchlist: !!s.is_critical,
       active: !!s.active,
       // null (not 0) when inactive -- computeHealthScores only scores
@@ -247,17 +256,20 @@ async function listServers(args = {}) {
   params.push(args.active === false ? 0 : 1);
   where.push(`active = $${params.length}`);
 
+  const limit = clampInt(args.limit, 100, 1, 200);
   const { rows } = await pool.query(
-    `SELECT hostname, fqdn, environment, business_unit, data_center, os_type, is_critical, active
-     FROM servers WHERE ${where.join(' AND ')} ORDER BY hostname LIMIT 100`,
-    params
+    `SELECT hostname, fqdn, environment, business_unit, data_center, os_type, source, notes,
+            is_critical, active, created_at
+     FROM servers WHERE ${where.join(' AND ')} ORDER BY hostname LIMIT $${params.length + 1}`,
+    [...params, limit]
   );
   return {
     matchCount: rows.length,
-    truncated: rows.length === 100,
+    truncated: rows.length === limit,
     servers: rows.map((s) => ({
       hostname: s.hostname, fqdn: s.fqdn, environment: s.environment, businessUnit: s.business_unit,
-      dataCenter: s.data_center, osType: s.os_type, onCriticalWatchlist: !!s.is_critical, active: !!s.active,
+      dataCenter: s.data_center, osType: s.os_type, source: s.source, notes: s.notes || null, addedOn: s.created_at,
+      onCriticalWatchlist: !!s.is_critical, active: !!s.active,
     })),
   };
 }
