@@ -35,7 +35,7 @@ const TOOLS = [
     type: 'function',
     function: {
       name: 'search_alerts',
-      description: 'Search alerts by any combination of server, alert name/type, severity, resolution state (open/closed), date range, environment, data center, or business unit. Returns matching rows by default, or grouped counts (e.g. "how many alerts per severity", "alerts by environment") when groupBy is set. Use this for any question about specific alerts/alarms that the data snapshot\'s top-5 lists don\'t already answer -- e.g. "how many Warning alerts are on server X", "how many alerts in Production", "is there an alert called Y anywhere", "list open alerts for server Z", "how many alerts happened last week", "break down alerts by severity for server X", "which business unit has the most critical alerts", "alerts in the DR data center".',
+      description: 'Search alerts by any combination of server, alert name/type, severity, resolution state (open/closed), date range, environment, data center, or business unit. Each matching row is the FULL incident record -- severity, resolution state, priority, repeat count, maintenance-mode flag, what specifically triggered it (source), when it was raised/last modified/resolved, its SCOM alert ID, and its server\'s environment/data center/business unit -- not a partial summary, so any question about one specific incident\'s details is answerable from this. Returns matching rows by default, or grouped counts (e.g. "how many alerts per severity", "alerts by environment") when groupBy is set. Use this for any question about specific alerts/alarms that the data snapshot\'s top-5 lists don\'t already answer -- e.g. "how many Warning alerts are on server X", "how many alerts in Production", "is there an alert called Y anywhere", "list open alerts for server Z", "how many alerts happened last week", "break down alerts by severity for server X", "which business unit has the most critical alerts", "alerts in the DR data center", "is this alert in maintenance mode", "what triggered this incident", "when was this last modified".',
       parameters: {
         type: 'object',
         properties: {
@@ -48,6 +48,7 @@ const TOOLS = [
           environment: { type: 'string', description: 'Exact or partial environment name (e.g. "Production", "DR"). Matches via the alert\'s server.' },
           dataCenter: { type: 'string', description: 'Exact or partial data center. Matches via the alert\'s server.' },
           businessUnit: { type: 'string', description: 'Exact or partial business unit. Matches via the alert\'s server.' },
+          limit: { type: 'integer', description: 'How many matching rows to return. Default 20, max 100 -- raise this when asked to list/see all matches rather than just a few.' },
           groupBy: {
             type: 'string',
             enum: ['severity', 'resolution', 'alertName', 'server', 'environment', 'dataCenter', 'businessUnit'],
@@ -200,22 +201,33 @@ async function searchAlerts(args = {}) {
 
   if (!where.length) return { error: 'At least one filter (server, alertName, severity, resolution, from, to, environment, dataCenter, or businessUnit) is required unless groupBy is set.' };
 
+  const limit = clampInt(args.limit, 20, 1, 100);
   const [{ rows: countRow }, { rows }] = await Promise.all([
     pool.query(`SELECT COUNT(*)::int AS c ${JOIN} ${whereSql}`, params),
     pool.query(
+      // Every column a question about one specific incident could ask
+      // about -- not just enough to list it in a table. "source" is what
+      // SCOM actually flagged (the underlying rule/monitor detail);
+      // in_maintenance_mode and scom_alert_id/last_modified only ever
+      // existed in the DB unexposed to the AI until this was added.
       `SELECT a.alert_name, COALESCE(s.hostname, a.server_name_raw) AS server, a.severity, a.resolution_state_label,
-              a.priority, a.repeat_count, a.created_at, a.resolved_at
-       ${JOIN} ${whereSql} ORDER BY a.created_at DESC LIMIT 20`,
-      params
+              a.priority, a.repeat_count, a.source, a.in_maintenance_mode, a.scom_alert_id,
+              a.created_at, a.last_modified, a.resolved_at,
+              s.environment, s.data_center, s.business_unit
+       ${JOIN} ${whereSql} ORDER BY a.created_at DESC LIMIT $${params.length + 1}`,
+      [...params, limit]
     ),
   ]);
   return {
     totalMatching: countRow[0].c,
     shownCount: rows.length,
-    note: rows.length < countRow[0].c ? `Showing the ${rows.length} most recent of ${countRow[0].c} total matches.` : undefined,
+    note: rows.length < countRow[0].c ? `Showing the ${rows.length} most recent of ${countRow[0].c} total matches -- raise the limit parameter to see more.` : undefined,
     alerts: rows.map((r) => ({
       name: r.alert_name, server: r.server, severity: r.severity, state: r.resolution_state_label,
-      priority: r.priority || null, repeatCount: r.repeat_count ?? null, raisedAt: r.created_at, resolvedAt: r.resolved_at || null,
+      priority: r.priority || null, repeatCount: r.repeat_count ?? null,
+      source: r.source || null, inMaintenanceMode: !!r.in_maintenance_mode, scomAlertId: r.scom_alert_id || null,
+      raisedAt: r.created_at, lastModified: r.last_modified || null, resolvedAt: r.resolved_at || null,
+      environment: r.environment || null, dataCenter: r.data_center || null, businessUnit: r.business_unit || null,
     })),
   };
 }
