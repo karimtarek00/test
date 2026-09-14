@@ -6,13 +6,13 @@ import { IconSearch } from '../components/icons.jsx';
 
 const PAGE_SIZE = 25;
 
-// Quick-filter shortcuts, not a stored/fabricated taxonomy -- each one just
-// fills the Alarm Type box with a keyword and relies on the existing
-// partial (LIKE) match against real alert_name text, the same match
-// alertFilters.js already does for the AI and the Analysis page. A server
-// with "MSSQL on Windows: CPU Utilization (%) is too high" and one with
-// "Total CPU Utilization Percentage is too high" both show up under "CPU"
-// without either of them being reclassified into some new field anywhere.
+// Category dropdown options, not a stored/fabricated taxonomy -- picking
+// one just sends that word as the alertName filter and relies on the
+// existing partial (LIKE) match against real alert_name text, the same
+// match alertFilters.js already does for the AI and the Analysis page. A
+// server with "MSSQL on Windows: CPU Utilization (%) is too high" and one
+// with "Total CPU Utilization Percentage is too high" both show up under
+// "CPU" without either of them being reclassified into some new field.
 const CATEGORY_SHORTCUTS = ['CPU', 'Memory', 'Disk', 'Backup', 'Cluster', 'Database', 'Network'];
 
 export default function AlarmsPage() {
@@ -47,8 +47,6 @@ export default function AlarmsPage() {
       .finally(() => setLoading(false));
   }, [severity, resolution, alertName, from, to, q, page]);
 
-  const toggleCategory = (name) => setAlertName((current) => (current.toLowerCase() === name.toLowerCase() ? '' : name));
-
   const totalPages = Math.max(1, Math.ceil(total / PAGE_SIZE));
 
   return (
@@ -71,7 +69,10 @@ export default function AlarmsPage() {
             <option value="closed">Closed only</option>
             <option value="">All</option>
           </select>
-          <input className="input" style={{ width: 200 }} placeholder="Alarm type contains…" value={alertName} onChange={(e) => setAlertName(e.target.value)} />
+          <select className="input" style={{ width: 180 }} value={alertName} onChange={(e) => setAlertName(e.target.value)}>
+            <option value="">All categories</option>
+            {CATEGORY_SHORTCUTS.map((name) => <option key={name} value={name}>{name}</option>)}
+          </select>
           <input className="input" type="date" style={{ width: 150 }} value={from} onChange={(e) => setFrom(e.target.value)} title="From date" />
           <input className="input" type="date" style={{ width: 150 }} value={to} onChange={(e) => setTo(e.target.value)} title="To date" />
           {(severity || resolution !== 'open' || alertName || from || to || q) && (
@@ -83,21 +84,6 @@ export default function AlarmsPage() {
               Reset filters
             </button>
           )}
-        </div>
-
-        <div className="toolbar" style={{ flexWrap: 'wrap', marginTop: -4 }}>
-          <span className="text-dim" style={{ fontSize: 12, alignSelf: 'center' }}>Quick categories:</span>
-          {CATEGORY_SHORTCUTS.map((name) => (
-            <button
-              key={name}
-              type="button"
-              className={alertName.toLowerCase() === name.toLowerCase() ? 'btn' : 'btn-secondary btn'}
-              style={{ padding: '4px 12px', fontSize: 12.5 }}
-              onClick={() => toggleCategory(name)}
-            >
-              {name}
-            </button>
-          ))}
         </div>
 
         <div className="panel">
