@@ -6,22 +6,37 @@ import { IconSearch } from '../components/icons.jsx';
 
 const PAGE_SIZE = 25;
 
+// Quick-filter shortcuts, not a stored/fabricated taxonomy -- each one just
+// fills the Alarm Type box with a keyword and relies on the existing
+// partial (LIKE) match against real alert_name text, the same match
+// alertFilters.js already does for the AI and the Analysis page. A server
+// with "MSSQL on Windows: CPU Utilization (%) is too high" and one with
+// "Total CPU Utilization Percentage is too high" both show up under "CPU"
+// without either of them being reclassified into some new field anywhere.
+const CATEGORY_SHORTCUTS = ['CPU', 'Memory', 'Disk', 'Backup', 'Cluster', 'Database', 'Network'];
+
 export default function AlarmsPage() {
   const [rows, setRows] = useState([]);
   const [total, setTotal] = useState(0);
   const [severity, setSeverity] = useState('');
   const [resolution, setResolution] = useState('open');
+  const [alertName, setAlertName] = useState('');
+  const [from, setFrom] = useState('');
+  const [to, setTo] = useState('');
   const [q, setQ] = useState('');
   const [page, setPage] = useState(1);
   const [loading, setLoading] = useState(true);
 
-  useEffect(() => setPage(1), [severity, resolution, q]);
+  useEffect(() => setPage(1), [severity, resolution, alertName, from, to, q]);
 
   useEffect(() => {
     setLoading(true);
     const params = new URLSearchParams({ page: String(page), pageSize: String(PAGE_SIZE) });
     if (severity) params.set('severity', severity);
     if (resolution) params.set('resolution', resolution);
+    if (alertName) params.set('alertName', alertName);
+    if (from) params.set('from', from);
+    if (to) params.set('to', to);
     if (q) params.set('q', q);
     api
       .get(`/alerts?${params.toString()}`)
@@ -30,7 +45,9 @@ export default function AlarmsPage() {
         setTotal(data.total);
       })
       .finally(() => setLoading(false));
-  }, [severity, resolution, q, page]);
+  }, [severity, resolution, alertName, from, to, q, page]);
+
+  const toggleCategory = (name) => setAlertName((current) => (current.toLowerCase() === name.toLowerCase() ? '' : name));
 
   const totalPages = Math.max(1, Math.ceil(total / PAGE_SIZE));
 
@@ -38,7 +55,7 @@ export default function AlarmsPage() {
     <>
       <TopBar title="Alerts" />
       <div className="content">
-        <div className="toolbar">
+        <div className="toolbar" style={{ flexWrap: 'wrap' }}>
           <div className="input-icon-wrap" style={{ width: 260 }}>
             <IconSearch />
             <input className="input" placeholder="Search alert or server…" value={q} onChange={(e) => setQ(e.target.value)} />
@@ -54,6 +71,33 @@ export default function AlarmsPage() {
             <option value="closed">Closed only</option>
             <option value="">All</option>
           </select>
+          <input className="input" style={{ width: 200 }} placeholder="Alarm type contains…" value={alertName} onChange={(e) => setAlertName(e.target.value)} />
+          <input className="input" type="date" style={{ width: 150 }} value={from} onChange={(e) => setFrom(e.target.value)} title="From date" />
+          <input className="input" type="date" style={{ width: 150 }} value={to} onChange={(e) => setTo(e.target.value)} title="To date" />
+          {(severity || resolution !== 'open' || alertName || from || to || q) && (
+            <button
+              className="btn-secondary btn"
+              type="button"
+              onClick={() => { setSeverity(''); setResolution('open'); setAlertName(''); setFrom(''); setTo(''); setQ(''); }}
+            >
+              Reset filters
+            </button>
+          )}
+        </div>
+
+        <div className="toolbar" style={{ flexWrap: 'wrap', marginTop: -4 }}>
+          <span className="text-dim" style={{ fontSize: 12, alignSelf: 'center' }}>Quick categories:</span>
+          {CATEGORY_SHORTCUTS.map((name) => (
+            <button
+              key={name}
+              type="button"
+              className={alertName.toLowerCase() === name.toLowerCase() ? 'btn' : 'btn-secondary btn'}
+              style={{ padding: '4px 12px', fontSize: 12.5 }}
+              onClick={() => toggleCategory(name)}
+            >
+              {name}
+            </button>
+          ))}
         </div>
 
         <div className="panel">
