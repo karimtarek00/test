@@ -81,7 +81,7 @@ const TOOLS = [
     type: 'function',
     function: {
       name: 'search_alerts',
-      description: 'Search alerts by any combination of server, alert name/type, severity, resolution state (open/closed), date range, environment, data center, or business unit. Each matching row is the FULL incident record -- severity, resolution state, priority, repeat count, maintenance-mode flag, what specifically triggered it (source), when it was raised/last modified/resolved, its SCOM alert ID, and its server\'s environment/data center/business unit -- not a partial summary, so any question about one specific incident\'s details is answerable from this. Returns matching rows by default, or grouped counts (e.g. "how many alerts per severity", "alerts by environment") when groupBy is set. Use this for any question about specific alerts/alarms that the data snapshot\'s top-5 lists don\'t already answer -- e.g. "how many Warning alerts are on server X", "how many alerts in Production", "is there an alert called Y anywhere", "list open alerts for server Z", "how many alerts happened last week", "break down alerts by severity for server X", "which business unit has the most critical alerts", "alerts in the DR data center", "is this alert in maintenance mode", "what triggered this incident", "when was this last modified".',
+      description: 'Search alerts by any combination of server, alert name/type, severity, resolution state (open/closed), date range, environment, data center, or business unit. Each matching row is the FULL incident record -- severity, resolution state, priority, repeat count, maintenance-mode flag, what specifically triggered it (source), when it was raised/last modified/resolved, its SCOM alert ID, and its server\'s environment/data center/business unit -- not a partial summary, so any question about one specific incident\'s details is answerable from this. Returns matching rows by default (capped by limit, sorted by recency -- NOT evenly spread across servers/types), or exact grouped counts when groupBy is set. CRITICAL: for ANY question comparing counts across multiple servers/types/severities/etc -- "which server has the most X", "top N servers/devices with X alerts", "how many X per server", "break down X by Y" -- always set groupBy, never fetch a plain row list and count occurrences yourself; the row list is truncated and sorted by recency, so a manual tally from it WILL be wrong (confirmed: a server with 8 real matches counted as 3 from a truncated list). groupBy computes the real count per group directly in the database. Use this for any question about specific alerts/alarms that the data snapshot\'s top-5 lists don\'t already answer -- e.g. "how many Warning alerts are on server X", "how many alerts in Production", "is there an alert called Y anywhere", "list open alerts for server Z", "how many alerts happened last week", "which business unit has the most critical alerts", "is this alert in maintenance mode", "what triggered this incident", "when was this last modified".',
       parameters: {
         type: 'object',
         properties: {
@@ -98,7 +98,7 @@ const TOOLS = [
           groupBy: {
             type: 'string',
             enum: ['severity', 'resolution', 'alertName', 'server', 'environment', 'dataCenter', 'businessUnit'],
-            description: 'If set, returns counts grouped by this field instead of a row listing -- use for "how many X per Y" questions.',
+            description: 'If set, returns exact counts grouped by this field (sorted highest first) instead of a row listing -- use for "how many X per Y", "top N servers/devices with X alerts", or "which Y has the most X" questions. Set groupBy="server" together with alertName to get the real top-N servers for a given alert type -- never derive that by counting server names in a plain (non-grouped) row list.',
           },
         },
       },
@@ -300,10 +300,23 @@ async function searchAlerts(args = {}) {
     }
   }
 
+  const isTruncated = rows.length < countRow[0].c;
+  const distinctServersShown = new Set(rows.map((r) => r.server)).size;
   return {
     totalMatching: countRow[0].c,
     shownCount: rows.length,
-    note: rows.length < countRow[0].c ? `Showing the ${rows.length} most recent of ${countRow[0].c} total matches -- raise the limit parameter to see more.` : undefined,
+    note: isTruncated ? `Showing the ${rows.length} most recent of ${countRow[0].c} total matches -- raise the limit parameter to see more.` : undefined,
+    // The single most reliable way this tool gets misused: counting how many
+    // times each server appears in this row list to answer "which server has
+    // the most X" or "how many per server" -- reproduced directly (a server
+    // with 8 real matches showed as 3 from a recency-truncated 20-of-29 list,
+    // since the missing 9 rows are NOT evenly distributed across servers).
+    // This list is sorted by recency, not grouped, so a per-server tally
+    // from it is only reliable when nothing was truncated AND every
+    // matching row was actually returned -- flag every other case loudly.
+    warning: (isTruncated && distinctServersShown > 1)
+      ? 'This list is truncated AND spans multiple servers -- do NOT count how many times each server appears here to answer a "how many per server" or "which server has the most" question; that arithmetic will be wrong because the missing rows are not evenly spread across servers. Call search_alerts again with the same filters plus groupBy="server" (or "alertName", etc.) instead -- it computes exact per-group counts in the database, not from this truncated list.'
+      : undefined,
     closestServers,
     closestAlertNames,
     hint: (closestServers?.length || closestAlertNames?.length)
