@@ -81,7 +81,7 @@ const TOOLS = [
     type: 'function',
     function: {
       name: 'search_alerts',
-      description: 'Search alerts by any combination of server, alert name/type, severity, resolution state (open/closed), date range, environment, data center, or business unit. Each matching row is the FULL incident record -- severity, resolution state, priority, repeat count, maintenance-mode flag, what specifically triggered it (source), when it was raised/last modified/resolved, its SCOM alert ID, and its server\'s environment/data center/business unit -- not a partial summary, so any question about one specific incident\'s details is answerable from this. Returns matching rows by default (capped by limit, sorted by recency -- NOT evenly spread across servers/types), or exact grouped counts when groupBy is set. CRITICAL: for ANY question comparing counts across multiple servers/types/severities/etc -- "which server has the most X", "top N servers/devices with X alerts", "how many X per server", "break down X by Y" -- always set groupBy, never fetch a plain row list and count occurrences yourself; the row list is truncated and sorted by recency, so a manual tally from it WILL be wrong (confirmed: a server with 8 real matches counted as 3 from a truncated list). groupBy computes the real count per group directly in the database. Use this for any question about specific alerts/alarms that the data snapshot\'s top-5 lists don\'t already answer -- e.g. "how many Warning alerts are on server X", "how many alerts in Production", "is there an alert called Y anywhere", "list open alerts for server Z", "how many alerts happened last week", "which business unit has the most critical alerts", "is this alert in maintenance mode", "what triggered this incident", "when was this last modified".',
+      description: 'Search alerts by any combination of server, alert name/type, severity, resolution state (open/closed), date range, environment, data center, or business unit. Each matching row is the FULL incident record -- severity, resolution state, priority, repeat count, maintenance-mode flag, what specifically triggered it (source), when it was raised/last modified/resolved, its SCOM alert ID, and its server\'s environment/data center/business unit -- not a partial summary, so any question about one specific incident\'s details is answerable from this. Returns matching rows by default (capped by limit, sorted by recency -- NOT evenly spread across servers/types), or exact grouped counts when groupBy is set. CRITICAL: for ANY question comparing counts across multiple servers/types/severities/etc -- "which server has the most X", "top N servers/devices with X alerts", "how many X per server", "break down X by Y" -- always set groupBy, never fetch a plain row list and count occurrences yourself; the row list is truncated and sorted by recency, so a manual tally from it WILL be wrong (confirmed: a server with 8 real matches counted as 3 from a truncated list). groupBy computes the real count per group directly in the database. Use this for any question about specific alerts/alarms that the data snapshot\'s top-5 lists don\'t already answer -- e.g. "how many Warning alerts are on server X", "how many alerts in Production", "is there an alert called Y anywhere", "list open alerts for server Z", "how many alerts happened last week", "which business unit has the most critical alerts", "is this alert in maintenance mode", "what triggered this incident", "when was this last modified". Every result carries appliedFilters describing exactly what scope its numbers cover -- a follow-up that broadens or changes scope (e.g. asks for an alarm\'s TOTAL/overall count after a previous question was scoped to one device) needs a FRESH call with the new scope, never the previous result reused or reinterpreted; check appliedFilters against what the current question is actually asking before answering.',
       parameters: {
         type: 'object',
         properties: {
@@ -281,6 +281,30 @@ function clampInt(value, fallback, min, max) {
   return Math.max(min, Math.min(max, n));
 }
 
+// Echoes back exactly which filters actually shaped a search_alerts result,
+// in plain words -- reproduced failure: asked for a specific alarm's total
+// count after a prior device-scoped question, got back "3 (1 open, 2
+// closed)" for that one device when the question meant fleet-wide. The
+// tool was never wrong for the query it was actually given (a
+// server-scoped count) -- the model reused/misread that scope for a
+// differently-scoped follow-up question. This can't stop a model from
+// misreading its own conversation, but it removes any ambiguity about
+// what a given number actually covers, so "3" always arrives labeled as
+// "server=X, alertName=Y" rather than presented as if it were unscoped.
+function describeAppliedScope(args) {
+  const parts = [];
+  if (args.server) parts.push(`server contains "${args.server}"`);
+  if (args.alertName) parts.push(`alert name contains "${args.alertName}"`);
+  if (args.severity) parts.push(`severity=${args.severity}`);
+  if (args.resolution) parts.push(`resolution=${args.resolution}`);
+  if (args.from) parts.push(`from ${args.from}`);
+  if (args.to) parts.push(`to ${args.to}`);
+  if (args.environment) parts.push(`environment contains "${args.environment}"`);
+  if (args.dataCenter) parts.push(`data center contains "${args.dataCenter}"`);
+  if (args.businessUnit) parts.push(`business unit contains "${args.businessUnit}"`);
+  return parts.length ? parts.join(', ') : 'no filters (fleet-wide, all time)';
+}
+
 async function searchAlerts(args = {}) {
   const { where, params, whereSql } = buildAlertFilters({
     server: args.server, alertName: args.alertName, severity: args.severity, resolution: args.resolution,
@@ -288,6 +312,7 @@ async function searchAlerts(args = {}) {
     environment: args.environment, dataCenter: args.dataCenter, businessUnit: args.businessUnit,
   });
   const JOIN = `FROM alerts a LEFT JOIN servers s ON s.id = a.server_id`;
+  const appliedFilters = describeAppliedScope(args);
 
   if (args.groupBy) {
     const column = GROUP_BY_COLUMNS[args.groupBy];
@@ -296,7 +321,7 @@ async function searchAlerts(args = {}) {
       `SELECT ${column} AS group_value, COUNT(*)::int AS c ${JOIN} ${whereSql} GROUP BY group_value ORDER BY c DESC LIMIT 25`,
       params
     );
-    return { groupedBy: args.groupBy, groups: rows.map((r) => ({ value: r.group_value, count: r.c })) };
+    return { groupedBy: args.groupBy, appliedFilters, groups: rows.map((r) => ({ value: r.group_value, count: r.c })) };
   }
 
   if (!where.length) return { error: 'At least one filter (server, alertName, severity, resolution, from, to, environment, dataCenter, or businessUnit) is required unless groupBy is set.' };
@@ -337,6 +362,12 @@ async function searchAlerts(args = {}) {
   const isTruncated = rows.length < countRow[0].c;
   const distinctServersShown = new Set(rows.map((r) => r.server)).size;
   return {
+    // Read this before answering "how many total" -- totalMatching is the
+    // count for EXACTLY this scope, nothing wider. If the question asks
+    // about a different or broader scope than what's listed here (e.g. it
+    // dropped a server name a previous question had), call this tool again
+    // with the correct filters -- never reuse a differently-scoped number.
+    appliedFilters,
     totalMatching: countRow[0].c,
     shownCount: rows.length,
     note: isTruncated ? `Showing the ${rows.length} most recent of ${countRow[0].c} total matches -- raise the limit parameter to see more.` : undefined,
