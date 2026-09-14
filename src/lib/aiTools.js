@@ -13,7 +13,7 @@
 // chatCompleteWithTools for the fallback behavior if a given gateway
 // doesn't support this at all.
 const { pool } = require('./db');
-const { buildAlertFilters } = require('./alertFilters');
+const { buildAlertFilters, escapeLikeTerm, LIKE_ESCAPE } = require('./alertFilters');
 const { computeHealthScores } = require('./healthScore');
 
 // A manager asking live/verbally will type or say a hostname or alert name
@@ -157,8 +157,8 @@ async function getServerStatus({ hostname } = {}) {
   const { rows: servers } = await pool.query(
     `SELECT id, hostname, fqdn, environment, business_unit, data_center, os_type, source, notes,
             is_critical, active, created_at
-     FROM servers WHERE hostname LIKE $1 ORDER BY hostname LIMIT 5`,
-    [`%${hostname.trim()}%`]
+     FROM servers WHERE hostname LIKE $1 ${LIKE_ESCAPE} ORDER BY hostname LIMIT 5`,
+    [`%${escapeLikeTerm(hostname.trim())}%`]
   );
   if (!servers.length) {
     const { rows: allHostnames } = await pool.query(`SELECT hostname FROM servers WHERE active = 1`);
@@ -322,7 +322,7 @@ async function searchAlerts(args = {}) {
 async function listServers(args = {}) {
   const where = [];
   const params = [];
-  const like = (col, val) => { params.push(`%${val}%`); where.push(`${col} LIKE $${params.length}`); };
+  const like = (col, val) => { params.push(`%${escapeLikeTerm(val)}%`); where.push(`${col} LIKE $${params.length} ${LIKE_ESCAPE}`); };
   if (args.environment) like('environment', args.environment);
   if (args.dataCenter) like('data_center', args.dataCenter);
   if (args.businessUnit) like('business_unit', args.businessUnit);
