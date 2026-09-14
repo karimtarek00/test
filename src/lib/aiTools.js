@@ -16,6 +16,52 @@ const { pool } = require('./db');
 const { buildAlertFilters } = require('./alertFilters');
 const { computeHealthScores } = require('./healthScore');
 
+// A manager asking live/verbally will type or say a hostname or alert name
+// with a typo, a transposed letter, or a shortened form far more often than
+// a spreadsheet import will -- and a LIKE substring search (however
+// permissive) still returns nothing for "RMP-DCDBS-UMSRGA" against the real
+// "RMP-DCDBS-UMRSG". Rather than let that dead-end as "not found" in front
+// of an audience, every lookup that comes up empty falls back to ranking
+// every real candidate by edit distance and handing the closest few back to
+// the model to retry with -- see the SYSTEM_PROMPT instruction to actually
+// use them instead of reporting failure.
+function levenshteinDistance(a, b) {
+  const m = a.length, n = b.length;
+  if (m === 0) return n;
+  if (n === 0) return m;
+  let prevRow = Array.from({ length: n + 1 }, (_, j) => j);
+  for (let i = 1; i <= m; i++) {
+    const currRow = [i];
+    for (let j = 1; j <= n; j++) {
+      currRow[j] = a[i - 1] === b[j - 1]
+        ? prevRow[j - 1]
+        : 1 + Math.min(prevRow[j - 1], prevRow[j], currRow[j - 1]);
+    }
+    prevRow = currRow;
+  }
+  return prevRow[n];
+}
+
+// A candidate is only worth suggesting if it's actually close -- with no
+// cutoff, a query for something that genuinely doesn't exist ("Proccesor",
+// when every real alert name is "...CPU Utilization...", not "Processor")
+// still returns the mathematically nearest names in the whole table, which
+// are not close at all and would send a confident retry down a completely
+// wrong path. The threshold scales with query length so short queries still
+// tolerate a typo or two without matching everything.
+function closestMatches(query, candidates, maxResults = 5) {
+  const q = (query || '').trim().toLowerCase();
+  if (!q || !candidates.length) return [];
+  const maxDistance = Math.max(2, Math.ceil(q.length * 0.34));
+  const uniqueCandidates = [...new Set(candidates)];
+  return uniqueCandidates
+    .map((c) => ({ value: c, distance: levenshteinDistance(q, c.toLowerCase()) }))
+    .filter((r) => r.distance <= maxDistance)
+    .sort((a, b) => a.distance - b.distance)
+    .slice(0, maxResults)
+    .map((r) => r.value);
+}
+
 const TOOLS = [
   {
     type: 'function',
@@ -114,7 +160,18 @@ async function getServerStatus({ hostname } = {}) {
      FROM servers WHERE hostname LIKE $1 ORDER BY hostname LIMIT 5`,
     [`%${hostname.trim()}%`]
   );
-  if (!servers.length) return { found: false, message: `No server matching "${hostname}" found in inventory.` };
+  if (!servers.length) {
+    const { rows: allHostnames } = await pool.query(`SELECT hostname FROM servers WHERE active = 1`);
+    const closestHostnames = closestMatches(hostname, allHostnames.map((r) => r.hostname));
+    return {
+      found: false,
+      message: `No server matching "${hostname}" found in inventory.`,
+      closestHostnames,
+      hint: closestHostnames.length
+        ? `"${hostname}" is very likely a typo/mishearing of one of closestHostnames -- immediately retry get_server_status with the closest one and answer from that result. Do not tell the user nothing was found without trying this first.`
+        : undefined,
+    };
+  }
 
   const health = await computeHealthScores();
   const matches = [];
@@ -227,10 +284,31 @@ async function searchAlerts(args = {}) {
       [...params, limit]
     ),
   ]);
+  // A typo'd server/alertName is the single most common way this comes back
+  // empty (see levenshteinDistance's comment above) -- rank the real values
+  // against what was actually typed so the model can retry instead of
+  // reporting a dead end.
+  let closestServers, closestAlertNames;
+  if (countRow[0].c === 0) {
+    if (args.server) {
+      const { rows: allHostnames } = await pool.query(`SELECT DISTINCT COALESCE(s.hostname, a.server_name_raw) AS name ${JOIN}`);
+      closestServers = closestMatches(args.server, allHostnames.map((r) => r.name));
+    }
+    if (args.alertName) {
+      const { rows: allAlertNames } = await pool.query(`SELECT DISTINCT alert_name FROM alerts`);
+      closestAlertNames = closestMatches(args.alertName, allAlertNames.map((r) => r.alert_name));
+    }
+  }
+
   return {
     totalMatching: countRow[0].c,
     shownCount: rows.length,
     note: rows.length < countRow[0].c ? `Showing the ${rows.length} most recent of ${countRow[0].c} total matches -- raise the limit parameter to see more.` : undefined,
+    closestServers,
+    closestAlertNames,
+    hint: (closestServers?.length || closestAlertNames?.length)
+      ? 'No exact match, but this is very likely a typo/mishearing -- immediately retry search_alerts with the closest server/alertName listed above and answer from that result. Do not tell the user nothing was found without trying this first.'
+      : undefined,
     alerts: rows.map((r) => ({
       name: r.alert_name, server: r.server, severity: r.severity, state: r.resolution_state_label,
       priority: r.priority || null, repeatCount: r.repeat_count ?? null,

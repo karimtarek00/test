@@ -106,7 +106,11 @@ router.post('/insights/refresh', requireAdmin, asyncHandler(async (req, res) => 
   }
 }));
 
-const MAX_TOOL_ROUNDS = 4;
+// 6, not 4 -- a typo'd hostname/alert name now costs an extra round (one
+// call that comes back empty with fuzzy suggestions, one retry using the
+// closest match), so a question that also needs a second tool for a
+// follow-up detail no longer risks running out of rounds mid-answer.
+const MAX_TOOL_ROUNDS = 6;
 
 // Chat with tool-calling: the digest above covers aggregates/top-N/most-
 // recent, which can never include every one of potentially hundreds of
