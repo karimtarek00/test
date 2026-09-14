@@ -12,7 +12,7 @@ const SEVERITY_COLORS = { Critical: 'var(--critical)', Warning: 'var(--warning)'
 const RESOLUTION_COLORS = { Closed: 'var(--healthy)', New: 'var(--warning)' };
 const PIE_FALLBACK = ['var(--info)', 'var(--critical)', 'var(--warning)', 'var(--healthy)', 'var(--accent-dim)'];
 
-const EMPTY_FILTERS = { server: '', alertName: '', severity: '', from: '', to: '' };
+const EMPTY_FILTERS = { server: '', alertName: '', severity: '', resolution: '', from: '', to: '' };
 
 export default function AnalysisPage() {
   const [filters, setFilters] = useState(EMPTY_FILTERS);
@@ -54,7 +54,7 @@ export default function AnalysisPage() {
       <TopBar title="Live Data & Analysis" />
       <div className="content">
         <p className="text-dim" style={{ marginTop: 0, marginBottom: 16, fontSize: 13 }}>
-          Filter by server, alarm type, severity, or date range -- every chart, KPI, and the incidents table below all reflect the same filtered set.
+          Filter by server, alarm type, severity, resolution state, or date range -- every chart, KPI, and the incidents table below all reflect the same filtered set.
         </p>
 
         <div className="toolbar" style={{ flexWrap: 'wrap' }}>
@@ -68,6 +68,11 @@ export default function AnalysisPage() {
             <option value="Critical">Critical</option>
             <option value="Warning">Warning</option>
             <option value="Information">Information</option>
+          </select>
+          <select className="input" style={{ width: 140 }} value={filters.resolution} onChange={set('resolution')}>
+            <option value="">All (open + closed)</option>
+            <option value="open">Open only</option>
+            <option value="closed">Closed only</option>
           </select>
           <input className="input" type="date" style={{ width: 150 }} value={filters.from} onChange={set('from')} />
           <input className="input" type="date" style={{ width: 150 }} value={filters.to} onChange={set('to')} />

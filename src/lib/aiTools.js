@@ -67,7 +67,7 @@ const TOOLS = [
     type: 'function',
     function: {
       name: 'get_server_status',
-      description: 'Look up one specific server by hostname or partial hostname and return EVERYTHING known about it: environment, business unit, data center, OS type, criticality, active state, how it entered the inventory (manual/import/sync) and when, any freeform notes, its health score, its actual open alerts, AND its recent alert history (most recent closed alerts, plus the all-time total). Use this any time a question names or clearly refers to a SPECIFIC server/node/device that is not already fully covered by the data snapshot above -- including "history"/"past alerts"/"what happened on server X" and "what OS is X running"/"when was X added"/"are there notes on X" questions. If more alert history is needed than the recent list returned here, follow up with search_alerts filtered to that server.',
+      description: 'Look up one specific server by hostname or partial hostname and return EVERYTHING known about it: environment, business unit, data center, OS type, criticality, active state, how it entered the inventory (manual/import/sync) and when, any freeform notes, its health score, its actual open alerts, AND its recent alert history (most recent closed alerts, plus the all-time total). Use this any time a question names or clearly refers to a SPECIFIC server/node/device that is not already fully covered by the data snapshot above -- including "history"/"past alerts"/"what happened on server X" and "what OS is X running"/"when was X added"/"are there notes on X" questions. An exact hostname always resolves unambiguously; a partial/truncated one can genuinely match several different real servers (e.g. shared-prefix naming) -- if the result has matchCount > 1, those are DIFFERENT servers with different data, never treat the first one as "the" answer, check disambiguationNote. If more alert history is needed than the recent list returned here, follow up with search_alerts filtered to that exact hostname.',
       parameters: {
         type: 'object',
         properties: {
@@ -154,12 +154,34 @@ const GROUP_BY_COLUMNS = {
 
 async function getServerStatus({ hostname } = {}) {
   if (!hostname || !hostname.trim()) return { error: 'hostname is required' };
-  const { rows: servers } = await pool.query(
-    `SELECT id, hostname, fqdn, environment, business_unit, data_center, os_type, source, notes,
-            is_critical, active, created_at
-     FROM servers WHERE hostname LIKE $1 ${LIKE_ESCAPE} ORDER BY hostname LIMIT 5`,
-    [`%${escapeLikeTerm(hostname.trim())}%`]
-  );
+  const term = hostname.trim();
+  const SERVER_COLUMNS = `id, hostname, fqdn, environment, business_unit, data_center, os_type, source, notes,
+            is_critical, active, created_at`;
+
+  // An exact hostname match is never ambiguous no matter how many other
+  // servers also happen to share a substring with it -- reproduced for
+  // real: searching a truncated name (e.g. "RMP-ITAPP-VD") can push the
+  // actually-intended server out of an alphabetically-limited substring
+  // match entirely, because several other "RMP-ITAPP-VDxxx" servers sort
+  // before it and fill the limit first. That previously caused this tool
+  // to silently return a DIFFERENT server's alerts as if they were the
+  // one asked about. Trying the exact match first sidesteps the whole
+  // problem for the common case (a hostname read straight off a screen).
+  const exactRes = await pool.query(`SELECT ${SERVER_COLUMNS} FROM servers WHERE LOWER(hostname) = LOWER($1)`, [term]);
+  let servers = exactRes.rows;
+  if (!servers.length) {
+    const { rows } = await pool.query(
+      // Ordered shortest-hostname-first, not alphabetically -- when many
+      // servers share a prefix (the common case above), the shorter ones
+      // are usually the closer match to a truncated search term, and this
+      // at least makes the ordering deliberate instead of an alphabetical
+      // accident. The real fix for genuine ambiguity is the warning below,
+      // not guessing a single "right" answer out of equally-valid matches.
+      `SELECT ${SERVER_COLUMNS} FROM servers WHERE hostname LIKE $1 ${LIKE_ESCAPE} ORDER BY LENGTH(hostname), hostname LIMIT 20`,
+      [`%${escapeLikeTerm(term)}%`]
+    );
+    servers = rows;
+  }
   if (!servers.length) {
     const { rows: allHostnames } = await pool.query(`SELECT hostname FROM servers WHERE active = 1`);
     const closestHostnames = closestMatches(hostname, allHostnames.map((r) => r.hostname));
@@ -224,7 +246,19 @@ async function getServerStatus({ hostname } = {}) {
         : undefined,
     });
   }
-  return { found: true, matchCount: matches.length, matches };
+  return {
+    found: true,
+    matchCount: matches.length,
+    // Multiple matches means genuinely different servers, not one server
+    // shown multiple ways -- reproduced failure: silently answering from
+    // the first one presented a completely different server's alert data
+    // (CPU/memory alerts) as if it belonged to the server actually asked
+    // about (which only had Failed to Ping alerts).
+    disambiguationNote: matches.length > 1
+      ? `"${term}" matched ${matches.length} different real servers, each with its own separate data below -- they are NOT the same server. Never pick just the first one and answer as if it's definitive. Either ask which specific hostname was meant, or if the surrounding conversation already makes it obvious, answer using that exact one -- but always name which hostname the answer is about.`
+      : undefined,
+    matches,
+  };
 }
 
 async function getHealthRankings(args = {}) {
